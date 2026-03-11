@@ -42,3 +42,23 @@ export async function createUserProfile(req, res) {
 
   }
 }
+import { uploadImage } from "../services/cloudinary.service.js";
+import { admin } from "../config/firebase.js";
+
+export async function updateUserPhoto(req, res, next) {
+  try {
+    const uid = req.user.uid;
+    if (!req.file) return res.status(400).json({ success: false, message: "Nenhuma foto enviada" });
+
+    const { url } = await uploadImage(req.file.buffer, "profiles");
+
+    await db.collection("users").doc(uid).update({
+      photo: url,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({ success: true, data: { photo: url } });
+  } catch (error) {
+    next(error);
+  }
+}

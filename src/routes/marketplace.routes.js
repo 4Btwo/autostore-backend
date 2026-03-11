@@ -1,21 +1,20 @@
 import express from "express";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
 import { db } from "../config/firebase.js";
-import { createMarketplacePart } from "../controllers/marketplace.controller.js";
+import { createMarketplacePart, updatePartImages } from "../controllers/marketplace.controller.js";
 import { authenticate } from "../middlewares/authMiddleware.js";
 
 const router = express.Router();
 
-const uploadPath = path.resolve("uploads");
-if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadPath),
-  filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname.replace(/\s/g, "_")),
+// Multer usa memória (não salva em disco) — envia direto para Cloudinary
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB por arquivo
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Apenas imagens são permitidas"));
+  },
 });
-const upload = multer({ storage });
 
 // GET — listar todas as peças do marketplace
 router.get("/", async (req, res, next) => {
@@ -61,7 +60,7 @@ router.get("/:id", async (req, res, next) => {
       const sellerDoc = await db.collection("users").doc(data.sellerId).get();
       if (sellerDoc.exists) {
         const s = sellerDoc.data();
-        data.seller = { name: s.name, sellerVerified: s.sellerVerified };
+        data.seller = { name: s.name, sellerVerified: s.sellerVerified, photo: s.photo || null };
       }
     }
 
@@ -71,7 +70,10 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-// POST — criar anúncio (vendedor autenticado)
+// POST — criar anúncio com até 4 fotos
 router.post("/", authenticate, upload.array("images", 4), createMarketplacePart);
+
+// PATCH /:id/images — atualizar fotos de uma peça existente
+router.patch("/:id/images", authenticate, upload.array("images", 4), updatePartImages);
 
 export default router;

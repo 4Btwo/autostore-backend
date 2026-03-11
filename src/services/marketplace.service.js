@@ -86,3 +86,24 @@ export async function createMarketplacePartService(data) {
     marketplacePartId: newMarketplace.id,
   };
 }
+export async function updateMarketplacePartImages(marketplacePartId, sellerId, newImages) {
+  const ref = db.collection("marketplaceParts").doc(marketplacePartId);
+  const doc = await ref.get();
+
+  if (!doc.exists) throw new Error("Peça não encontrada");
+  if (doc.data().sellerId !== sellerId) throw new Error("Sem permissão para editar esta peça");
+
+  const currentImages = doc.data().images || [];
+  // Mantém até 4 fotos no total
+  const merged = [...currentImages, ...newImages].slice(0, 4);
+
+  // Atualiza também no masterPart se não tiver imagens
+  const masterRef = db.collection("masterParts").doc(doc.data().masterPartId);
+  const masterDoc = await masterRef.get();
+  if (masterDoc.exists && (!masterDoc.data().images || !masterDoc.data().images.length)) {
+    await masterRef.update({ images: merged });
+  }
+
+  await ref.update({ images: merged, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+  return { marketplacePartId, images: merged };
+}

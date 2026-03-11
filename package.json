@@ -20,6 +20,7 @@
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0",
-    "mercadopago": "^2.0.15"
+    "mercadopago": "^2.0.15",
+    "cloudinary": "^2.2.0"
   }
 }
