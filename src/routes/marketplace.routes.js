@@ -16,7 +16,7 @@ const upload = multer({
   },
 });
 
-// GET — listar todas as peças do marketplace
+// GET — listar todas as peças do marketplace (enriquecido com masterPart + categoria)
 router.get("/", async (req, res, next) => {
   try {
     const { sellerId, condition, limit = 20 } = req.query;
@@ -25,7 +25,37 @@ router.get("/", async (req, res, next) => {
     if (condition) query = query.where("condition", "==", condition);
     query = query.orderBy("createdAt", "desc").limit(Number(limit));
     const snap = await query.get();
-    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const items = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Busca masterParts únicos em paralelo
+    const masterIds = [...new Set(items.map(i => i.masterPartId).filter(Boolean))];
+    const masterDocs = await Promise.all(masterIds.map(id => db.collection("masterParts").doc(id).get()));
+    const masterMap = {};
+    for (const doc of masterDocs) {
+      if (doc.exists) masterMap[doc.id] = doc.data();
+    }
+
+    // Busca categorias únicas em paralelo
+    const catIds = [...new Set(Object.values(masterMap).map(m => m.categoryId).filter(Boolean))];
+    const catDocs = await Promise.all(catIds.map(id => db.collection("categories").doc(id).get()));
+    const catMap = {};
+    for (const doc of catDocs) {
+      if (doc.exists) catMap[doc.id] = doc.data().name;
+    }
+
+    // Monta resposta enriquecida
+    const data = items.map(item => {
+      const master = masterMap[item.masterPartId];
+      if (!master) return item;
+      return {
+        ...item,
+        part: {
+          ...master,
+          categoryName: catMap[master.categoryId] || null,
+        },
+      };
+    });
+
     res.json({ success: true, data });
   } catch (error) {
     next(error);
