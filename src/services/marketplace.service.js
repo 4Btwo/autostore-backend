@@ -77,6 +77,7 @@ export async function createMarketplacePartService(data) {
     stock: Number(stock),
     condition,
     warrantyMonths: Number(warrantyMonths),
+    images: images || [],
     active: true,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
