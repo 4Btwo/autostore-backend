@@ -17,6 +17,7 @@ import marketplaceRoutes from "./routes/marketplace.routes.js";
 import plateRoutes from "./routes/plate.routes.js";
 import ordersRoutes from "./routes/orders.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
+import reviewsRoutes from "./routes/reviews.routes.js";
 import errorMiddleware from "./middlewares/error.middleware.js";
 
 const app = express();
@@ -47,6 +48,7 @@ app.use("/upload", uploadRoutes);
 app.use("/marketplaceParts", marketplaceRoutes);
 app.use("/plate-search", plateRoutes);
 app.use("/orders", ordersRoutes);
+app.use("/reviews", reviewsRoutes);
 app.use("/payments", paymentRoutes);
 
 // Docs
