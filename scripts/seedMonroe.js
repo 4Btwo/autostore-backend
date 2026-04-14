@@ -8,14 +8,14 @@
 
 import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
-import { dirname } from "path";
-import { fileURLToPath } from "url";
+import { readFileSync } from "fs";
+import { resolve } from "path";
+import dotenv from "dotenv";
+dotenv.config();
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const sa = JSON.parse(
-  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, "base64").toString("utf8")
-);
+const keyPath = resolve(process.cwd(), process.env.GOOGLE_APPLICATION_CREDENTIALS);
+const sa = JSON.parse(readFileSync(keyPath, "utf8"));
 initializeApp({ credential: cert(sa) });
 const db = getFirestore();
 

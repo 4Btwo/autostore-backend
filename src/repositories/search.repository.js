@@ -1,66 +1,37 @@
-import {db} from "../config/firebase.js";
+import { db } from "../config/firebase.js";
 
-export async function findBrandBySlug(slug) {
-  const snapshot = await db
-    .collection("brands")
-    .where("slug", "==", slug)
-    .where("active", "==", true)
-    .limit(1)
-    .get();
+// ─── Busca compatibilidades usando a coleção flat ────────────────────────────
+// Campos esperados em cada doc de `compatibilities`:
+//   brandSlug, modelSlug, engineDisplacement, fuelNorm, masterPartId, active
+//
+// Esses campos são adicionados automaticamente pelo script migrateCompatibilities.js
+// e já estarão presentes nos seeds novos (Mahle, NGK, Bosch, etc.)
 
-  if (snapshot.empty) return null;
-
-  const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() };
-}
-
-export async function findModelBySlug(slug, brandId) {
-  const snapshot = await db
-    .collection("models")
-    .where("slug", "==", slug)
-    .where("brandId", "==", brandId)
-    .where("active", "==", true)
-    .limit(1)
-    .get();
-
-  if (snapshot.empty) return null;
-
-  const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() };
-}
-
-/* 🔥 CORRIGIDO AQUI */
-export async function findTechnical(
-  brandId,
-  modelId,
+export async function findCompatiblePartIds({
+  brandSlug,
+  modelSlug,
   engineDisplacement,
-  fuelType
-) {
+  fuelNorm,
+}) {
   const snapshot = await db
-    .collection("vehicleTechnicals") // ✅ coleção correta
-    .where("brandId", "==", brandId)
-    .where("modelId", "==", modelId)
+    .collection("compatibilities")
+    .where("brandSlug", "==", brandSlug)
+    .where("modelSlug", "==", modelSlug)
     .where("engineDisplacement", "==", engineDisplacement)
-    .where("fuelType", "==", fuelType)
-    .where("active", "==", true)
-    .limit(1)
-    .get();
-
-  if (snapshot.empty) return null;
-
-  const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() };
-}
-
-/* 🔥 CORRIGIDO AQUI */
-export async function findCompatibilities(technicalId) {
-  const snapshot = await db
-    .collection("technicalCompatibilities") // ✅ coleção correta
-    .where("vehicleTechnicalId", "==", technicalId) // ✅ campo correto
+    .where("fuelNorm", "==", fuelNorm)
     .where("active", "==", true)
     .get();
 
-  return snapshot.docs.map((doc) => doc.data().masterPartId);
+  if (snapshot.empty) return [];
+
+  // Deduplica masterPartIds (uma peça pode ter múltiplos docs de compatibilidade)
+  const ids = new Set();
+  snapshot.docs.forEach((doc) => {
+    const id = doc.data().masterPartId;
+    if (id) ids.add(id);
+  });
+
+  return [...ids];
 }
 
 export async function findMarketplaceParts({
@@ -76,45 +47,29 @@ export async function findMarketplaceParts({
   if (!masterPartIds.length)
     return { data: [], pagination: { hasMore: false } };
 
+  // Firestore limita "in" a 10 itens — paginamos o array se necessário
+  const ids = masterPartIds.slice(0, 10);
+
   let query = db
     .collection("marketplaceParts")
-    .where("masterPartId", "in", masterPartIds.slice(0, 10))
+    .where("masterPartId", "in", ids)
     .where("active", "==", true);
 
-  if (minStock) {
-    query = query.where("stock", ">=", minStock);
-  }
-
-  if (condition) {
-    query = query.where("condition", "==", condition);
-  }
-
-  if (minWarranty) {
-    query = query.where("warrantyMonths", ">=", minWarranty);
-  }
+  if (minStock) query = query.where("stock", ">=", Number(minStock));
+  if (condition) query = query.where("condition", "==", condition);
+  if (minWarranty) query = query.where("warrantyMonths", ">=", Number(minWarranty));
 
   query = query.orderBy(orderBy || "createdAt", orderDirection || "desc");
 
   if (lastDocId) {
-    const lastDoc = await db
-      .collection("marketplaceParts")
-      .doc(lastDocId)
-      .get();
-
-    if (lastDoc.exists) {
-      query = query.startAfter(lastDoc);
-    }
+    const lastDoc = await db.collection("marketplaceParts").doc(lastDocId).get();
+    if (lastDoc.exists) query = query.startAfter(lastDoc);
   }
 
   query = query.limit(limit || 10);
 
   const snapshot = await query.get();
-
-  const data = snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  }));
-
+  const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   const lastVisible = snapshot.docs[snapshot.docs.length - 1];
 
   return {
@@ -128,42 +83,18 @@ export async function findMarketplaceParts({
 
 export async function findMasterPartsByIds(ids) {
   if (!ids.length) return [];
-
   const snapshot = await db
     .collection("masterParts")
     .where("__name__", "in", ids.slice(0, 10))
     .get();
-
-  return snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  }));
-}
-
-export async function findBrandsByIds(ids) {
-  if (!ids.length) return [];
-
-  const snapshot = await db
-    .collection("brands")
-    .where("__name__", "in", ids.slice(0, 10))
-    .get();
-
-  return snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  }));
+  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 }
 
 export async function findCategoriesByIds(ids) {
   if (!ids.length) return [];
-
   const snapshot = await db
     .collection("categories")
     .where("__name__", "in", ids.slice(0, 10))
     .get();
-
-  return snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  }));
+  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 }
