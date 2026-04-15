@@ -1,31 +1,33 @@
-import {db} from "../config/firebase.js";
+import { db } from "../config/firebase.js";
 
 export async function getPartsByVehicle(vehicleId) {
-  const partsSnap = await db.collection("parts").get();
+  // Usa a coleção flat de compatibilidades — sem varrer toda a coleção parts
+  const compatSnap = await db
+    .collection("compatibilities")
+    .where("vehicleId", "==", vehicleId)
+    .where("active", "==", true)
+    .get();
 
-  const parts = [];
+  if (compatSnap.empty) return [];
 
-  for (const partDoc of partsSnap.docs) {
-    const compatSnap = await partDoc.ref
-      .collection("compatibilities")
-      .where("vehicleId", "==", vehicleId)
-      .where("active", "==", true)
-      .get();
+  const partIds = [...new Set(compatSnap.docs.map((d) => d.data().masterPartId).filter(Boolean))];
+  if (!partIds.length) return [];
 
-    if (!compatSnap.empty) {
-      parts.push({
-        id: partDoc.id,
-        ...partDoc.data(),
-      });
-    }
-  }
+  // Busca em chunks de 10
+  const chunks = [];
+  for (let i = 0; i < partIds.length; i += 10) chunks.push(partIds.slice(i, i + 10));
 
-  return parts;
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      db.collection("masterParts").where("__name__", "in", chunk).get()
+    )
+  );
+
+  return results.flatMap((snap) =>
+    snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+  );
 }
-export const findPartsByVehicle = async (vehicle) => {
 
-  const parts = await getPartsByVehicle(vehicle);
-
-  return parts;
-
-};
+export async function findPartsByVehicle(vehicle) {
+  return getPartsByVehicle(vehicle);
+}

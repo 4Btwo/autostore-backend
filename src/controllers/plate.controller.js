@@ -1,47 +1,24 @@
 import { getVehicleByPlate } from "../services/plate.service.js";
-import { findPartsByVehicle } from "../services/parts.service.js";
+import { executeSearch } from "../services/search.service.js";
+import AppError from "../errors/AppError.js";
 
-export const searchByPlate = async (req, res) => {
-
+export const searchByPlate = async (req, res, next) => {
   try {
-
     const { plate } = req.body;
+    if (!plate) throw new AppError("Placa obrigatória", 400, "VALIDATION_ERROR");
 
-    if (!plate) {
-      return res.status(400).json({
-        success:false,
-        message:"Placa obrigatória"
-      });
-    }
-
-    // 1 buscar dados do carro
     const vehicle = await getVehicleByPlate(plate);
+    if (!vehicle) throw new AppError("Veículo não encontrado", 404, "NOT_FOUND");
 
-    if(!vehicle){
-      return res.status(404).json({
-        success:false,
-        message:"Veículo não encontrado"
-      });
-    }
-
-    // 2 buscar peças
-    const parts = await findPartsByVehicle(vehicle);
-
-    return res.json({
-      success:true,
-      vehicle,
-      parts
+    const results = await executeSearch({
+      brand: vehicle.brand,
+      model: vehicle.model,
+      engineDisplacement: vehicle.engine,
+      fuelType: vehicle.fuel,
     });
 
-  } catch(error){
-
-    console.error(error);
-
-    return res.status(500).json({
-      success:false,
-      message:"Erro interno"
-    });
-
+    return res.json({ success: true, vehicle, ...results });
+  } catch (error) {
+    next(error);
   }
-
 };

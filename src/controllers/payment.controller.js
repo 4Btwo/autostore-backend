@@ -1,12 +1,15 @@
-import { createPaymentPreference, processWebhook } from "../services/payment.service.js";
+import {
+  createPaymentPreference,
+  processWebhook,
+  validateWebhookSignature,
+} from "../services/payment.service.js";
 import { createOrder } from "../services/orders.service.js";
 import { successResponse } from "../utils/response.js";
 import { db } from "../config/firebase.js";
+import logger from "../utils/logger.js";
+import AppError from "../errors/AppError.js";
 
-/**
- * POST /payments/create
- * Cria pedido + preferência no MP e retorna a URL de pagamento
- */
+// POST /payments/create
 export async function createPayment(req, res, next) {
   try {
     const buyerId = req.user.uid;
@@ -14,13 +17,16 @@ export async function createPayment(req, res, next) {
     const { items, total } = req.body;
 
     if (!items?.length) {
-      return res.status(400).json({ success: false, message: "Carrinho vazio" });
+      throw new AppError("Carrinho vazio", 400, "EMPTY_CART");
     }
 
-    // 1. Cria o pedido no Firestore (status: awaiting_payment)
-    const order = await createOrder({ buyerId, items, total, skipStockDecrement: true });
+    const order = await createOrder({
+      buyerId,
+      items,
+      total,
+      skipStockDecrement: true,
+    });
 
-    // 2. Cria preferência no Mercado Pago
     const preference = await createPaymentPreference({
       orderId: order.orderId,
       items,
@@ -28,48 +34,68 @@ export async function createPayment(req, res, next) {
       buyerId,
     });
 
-    return successResponse(res, {
+    logger.info("Preferência de pagamento criada", {
       orderId: order.orderId,
-      preferenceId: preference.preferenceId,
-      initPoint: preference.initPoint,
-    }, {}, 201);
+      buyerId,
+    });
 
+    return successResponse(
+      res,
+      {
+        orderId: order.orderId,
+        preferenceId: preference.preferenceId,
+        initPoint: preference.initPoint,
+      },
+      {},
+      201
+    );
   } catch (error) {
-    console.error("❌ Erro em createPayment:", error?.message);
     next(error);
   }
 }
 
-/**
- * POST /payments/webhook
- * Recebe notificações do Mercado Pago
- */
+// POST /payments/webhook
 export async function webhook(req, res) {
   try {
+    // Valida assinatura do Mercado Pago
+    const isValid = validateWebhookSignature(req);
+    if (!isValid) {
+      logger.warn("Webhook MP com assinatura inválida", {
+        ip: req.ip,
+        headers: {
+          "x-signature": req.headers["x-signature"],
+          "x-request-id": req.headers["x-request-id"],
+        },
+      });
+      // Retorna 200 mesmo assim — MP reenviaria se retornarmos erro
+      return res.status(200).json({ received: false, reason: "invalid_signature" });
+    }
+
     const { type, data } = req.body;
     const result = await processWebhook({ type, data });
-    console.log("🔔 Webhook MP processado:", result);
+
+    logger.info("Webhook MP processado", result);
     return res.status(200).json({ received: true, ...result });
   } catch (error) {
-    console.error("❌ Erro no webhook MP:", error.message);
+    logger.error("Erro no webhook MP", { message: error.message });
+    // Sempre responde 200 para o MP não retentar
     return res.status(200).json({ received: true, error: error.message });
   }
 }
 
-/**
- * GET /payments/status/:orderId
- * Consulta status do pagamento de um pedido
- */
+// GET /payments/status/:orderId
 export async function getPaymentStatus(req, res, next) {
   try {
     const { orderId } = req.params;
     const buyerId = req.user.uid;
 
     const doc = await db.collection("orders").doc(orderId).get();
-    if (!doc.exists) return res.status(404).json({ success: false, message: "Pedido não encontrado" });
+    if (!doc.exists)
+      throw new AppError("Pedido não encontrado", 404, "NOT_FOUND");
 
     const order = doc.data();
-    if (order.buyerId !== buyerId) return res.status(403).json({ success: false, message: "Acesso negado" });
+    if (order.buyerId !== buyerId)
+      throw new AppError("Acesso negado", 403, "FORBIDDEN");
 
     return successResponse(res, {
       orderId,

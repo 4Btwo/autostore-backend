@@ -1,16 +1,12 @@
 import { Router } from "express";
 import { create, listMyOrders, updateStatus } from "../controllers/orders.controller.js";
 import { authenticate } from "../middlewares/authMiddleware.js";
+import { validate, createOrderSchema, updateOrderStatusSchema } from "../middlewares/validate.js";
 
 const router = Router();
 
-// Criar pedido (comprador autenticado)
-router.post("/", authenticate, create);
-
-// Listar meus pedidos
+router.post("/", authenticate, validate(createOrderSchema), create);
 router.get("/my", authenticate, listMyOrders);
-
-// Atualizar status (vendedor/admin)
-router.patch("/:orderId/status", authenticate, updateStatus);
+router.patch("/:orderId/status", authenticate, validate(updateOrderStatusSchema), updateStatus);
 
 export default router;

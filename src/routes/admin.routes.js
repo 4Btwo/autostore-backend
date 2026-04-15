@@ -1,55 +1,43 @@
-// ─── src/routes/admin.routes.js ───────────────────────────────────────────────
-// Rotas de administração/moderação de anúncios
-//
-// COMO USAR:
-//   No arquivo src/routes.js (ou server.js), adicione:
-//   import adminRoutes from "./routes/admin.routes.js";
-//   router.use("/admin", adminRoutes);
-// ─────────────────────────────────────────────────────────────────────────────
-
 import express from "express";
-import { db } from "./config/firebase.js";  // ajuste o path se necessário
+import { db, admin } from "../config/firebase.js";
+import { requireAdmin } from "../middlewares/authMiddleware.js";
+import { validate, adminRejectSchema } from "../middlewares/validate.js";
+import logger from "../utils/logger.js";
 
 const router = express.Router();
 
-// ─── MIDDLEWARE: verifica se o usuário é admin ─────────────────────────────────
-async function requireAdmin(req, res, next) {
-  try {
-    const uid = req.user?.uid;
-    if (!uid) return res.status(401).json({ success: false, message: "Não autenticado" });
-
-    const userDoc = await db.collection("users").doc(uid).get();
-    if (!userDoc.exists || !userDoc.data().isAdmin) {
-      return res.status(403).json({ success: false, message: "Acesso negado — requer admin" });
-    }
-    next();
-  } catch (e) {
-    next(e);
-  }
-}
+// Todas as rotas admin exigem Custom Claim isAdmin=true
+router.use(requireAdmin);
 
 // ─── GET /admin/marketplace-parts ─────────────────────────────────────────────
-// Lista anúncios filtrados por status (pending | approved | rejected | flagged)
-router.get("/marketplace-parts", requireAdmin, async (req, res, next) => {
+router.get("/marketplace-parts", async (req, res, next) => {
   try {
     const { status = "pending", limit = 50 } = req.query;
 
-    let query = db.collection("marketplaceParts").where("moderationStatus", "==", status);
-    query = query.orderBy("createdAt", "desc").limit(Number(limit));
+    const snap = await db
+      .collection("marketplaceParts")
+      .where("moderationStatus", "==", status)
+      .orderBy("createdAt", "desc")
+      .limit(Number(limit))
+      .get();
 
-    const snap = await query.get();
-    const parts = [];
+    if (snap.empty) return res.json({ success: true, data: [] });
 
-    for (const doc of snap.docs) {
-      const data = doc.data();
-      // Busca dados do vendedor
-      let seller = null;
-      if (data.sellerId) {
-        const sellerDoc = await db.collection("users").doc(data.sellerId).get();
-        if (sellerDoc.exists) seller = { uid: sellerDoc.id, ...sellerDoc.data() };
-      }
-      parts.push({ id: doc.id, ...data, seller });
-    }
+    // Coleta sellerIds únicos e busca todos de uma vez — sem N+1
+    const sellerIds = [...new Set(snap.docs.map((d) => d.data().sellerId).filter(Boolean))];
+    const sellerDocs = await Promise.all(
+      sellerIds.map((id) => db.collection("users").doc(id).get())
+    );
+    const sellerMap = {};
+    sellerDocs.forEach((doc) => {
+      if (doc.exists) sellerMap[doc.id] = { uid: doc.id, ...doc.data() };
+    });
+
+    const parts = snap.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      seller: sellerMap[doc.data().sellerId] || null,
+    }));
 
     res.json({ success: true, data: parts });
   } catch (e) {
@@ -58,15 +46,15 @@ router.get("/marketplace-parts", requireAdmin, async (req, res, next) => {
 });
 
 // ─── GET /admin/marketplace-parts/stats ──────────────────────────────────────
-// Retorna contadores de anúncios por status
-router.get("/marketplace-parts/stats", requireAdmin, async (req, res, next) => {
+router.get("/marketplace-parts/stats", async (req, res, next) => {
   try {
     const statuses = ["pending", "approved", "rejected", "flagged"];
     const counts = {};
 
     await Promise.all(
       statuses.map(async (status) => {
-        const snap = await db.collection("marketplaceParts")
+        const snap = await db
+          .collection("marketplaceParts")
           .where("moderationStatus", "==", status)
           .count()
           .get();
@@ -81,20 +69,20 @@ router.get("/marketplace-parts/stats", requireAdmin, async (req, res, next) => {
 });
 
 // ─── PATCH /admin/marketplace-parts/:id/approve ──────────────────────────────
-// Aprova um anúncio
-router.patch("/marketplace-parts/:id/approve", requireAdmin, async (req, res, next) => {
+router.patch("/marketplace-parts/:id/approve", async (req, res, next) => {
   try {
     const { id } = req.params;
     const adminUid = req.user.uid;
 
     await db.collection("marketplaceParts").doc(id).update({
       moderationStatus: "approved",
+      active: true,
       approvedAt: new Date().toISOString(),
       approvedBy: adminUid,
       rejectionReason: null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // Notifica o vendedor via Firestore (seu sistema de notificações pode usar isso)
     const partDoc = await db.collection("marketplaceParts").doc(id).get();
     const part = partDoc.data();
     if (part?.sellerId) {
@@ -105,10 +93,11 @@ router.patch("/marketplace-parts/:id/approve", requireAdmin, async (req, res, ne
         message: `Seu anúncio "${part.name || "Peça"}" foi aprovado e já está visível no marketplace.`,
         partId: id,
         read: false,
-        createdAt: new Date().toISOString(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
 
+    logger.info("Anúncio aprovado", { partId: id, adminUid });
     res.json({ success: true, message: "Anúncio aprovado com sucesso" });
   } catch (e) {
     next(e);
@@ -116,44 +105,48 @@ router.patch("/marketplace-parts/:id/approve", requireAdmin, async (req, res, ne
 });
 
 // ─── PATCH /admin/marketplace-parts/:id/reject ───────────────────────────────
-// Rejeita um anúncio com motivo
-router.patch("/marketplace-parts/:id/reject", requireAdmin, async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { reason = "Não aprovado pela moderação" } = req.body;
-    const adminUid = req.user.uid;
+router.patch(
+  "/marketplace-parts/:id/reject",
+  validate(adminRejectSchema),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const { reason = "Não aprovado pela moderação" } = req.body;
+      const adminUid = req.user.uid;
 
-    await db.collection("marketplaceParts").doc(id).update({
-      moderationStatus: "rejected",
-      rejectedAt: new Date().toISOString(),
-      rejectedBy: adminUid,
-      rejectionReason: reason,
-    });
-
-    // Notifica o vendedor
-    const partDoc = await db.collection("marketplaceParts").doc(id).get();
-    const part = partDoc.data();
-    if (part?.sellerId) {
-      await db.collection("notifications").add({
-        userId: part.sellerId,
-        type: "listing_rejected",
-        title: "Anúncio não aprovado",
-        message: `Seu anúncio "${part.name || "Peça"}" foi rejeitado. Motivo: ${reason}`,
-        partId: id,
-        read: false,
-        createdAt: new Date().toISOString(),
+      await db.collection("marketplaceParts").doc(id).update({
+        moderationStatus: "rejected",
+        active: false,
+        rejectedAt: new Date().toISOString(),
+        rejectedBy: adminUid,
+        rejectionReason: reason,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-    }
 
-    res.json({ success: true, message: "Anúncio rejeitado" });
-  } catch (e) {
-    next(e);
+      const partDoc = await db.collection("marketplaceParts").doc(id).get();
+      const part = partDoc.data();
+      if (part?.sellerId) {
+        await db.collection("notifications").add({
+          userId: part.sellerId,
+          type: "listing_rejected",
+          title: "Anúncio não aprovado",
+          message: `Seu anúncio "${part.name || "Peça"}" foi rejeitado. Motivo: ${reason}`,
+          partId: id,
+          read: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+
+      logger.info("Anúncio rejeitado", { partId: id, adminUid, reason });
+      res.json({ success: true, message: "Anúncio rejeitado" });
+    } catch (e) {
+      next(e);
+    }
   }
-});
+);
 
 // ─── PATCH /admin/marketplace-parts/:id/flag ─────────────────────────────────
-// Marca um anúncio como suspeito para revisão posterior
-router.patch("/marketplace-parts/:id/flag", requireAdmin, async (req, res, next) => {
+router.patch("/marketplace-parts/:id/flag", async (req, res, next) => {
   try {
     const { id } = req.params;
     const { note = "Marcado para revisão" } = req.body;
@@ -161,36 +154,67 @@ router.patch("/marketplace-parts/:id/flag", requireAdmin, async (req, res, next)
 
     await db.collection("marketplaceParts").doc(id).update({
       moderationStatus: "flagged",
+      active: false,
       flaggedAt: new Date().toISOString(),
       flaggedBy: adminUid,
       flagNote: note,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    logger.info("Anúncio sinalizado", { partId: id, adminUid });
     res.json({ success: true, message: "Anúncio marcado como suspeito" });
   } catch (e) {
     next(e);
   }
 });
 
+// ─── POST /admin/set-admin-claim ─────────────────────────────────────────────
+// Promove um usuário a admin via Custom Claim (use apenas para configuração inicial)
+router.post("/set-admin-claim", async (req, res, next) => {
+  try {
+    const { targetUid } = req.body;
+    if (!targetUid)
+      return res.status(400).json({ success: false, message: "targetUid obrigatório" });
+
+    await admin.auth().setCustomUserClaims(targetUid, { isAdmin: true });
+
+    // Atualiza também no Firestore para referência
+    await db.collection("users").doc(targetUid).update({ isAdmin: true });
+
+    logger.info("Custom claim isAdmin definido", {
+      targetUid,
+      setBy: req.user.uid,
+    });
+
+    res.json({
+      success: true,
+      message: `Usuário ${targetUid} promovido a admin. Ele precisará fazer login novamente para o token atualizar.`,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ─── GET /admin/users ─────────────────────────────────────────────────────────
+router.get("/users", async (req, res, next) => {
+  try {
+    const { limit = 50, type } = req.query;
+    let query = db.collection("users");
+    if (type) query = query.where("type", "==", type);
+    query = query.orderBy("createdAt", "desc").limit(Number(limit));
+
+    const snap = await query.get();
+    const users = snap.docs.map((doc) => {
+      const d = doc.data();
+      // Nunca retorna dados sensíveis
+      const { password, ...safe } = d;
+      return { id: doc.id, ...safe };
+    });
+
+    res.json({ success: true, data: users });
+  } catch (e) {
+    next(e);
+  }
+});
+
 export default router;
-
-
-// ─── MUDANÇA NECESSÁRIA NO MODELO DE DADOS ────────────────────────────────────
-//
-// Ao criar um novo anúncio via POST /marketplaceParts, adicione o campo:
-//   moderationStatus: "pending"   ← padrão para todos os novos anúncios
-//
-// No marketplace.service.js (createMarketplacePartService), adicione:
-//   moderationStatus: "pending",
-//   approvedAt: null,
-//   rejectedAt: null,
-//   rejectionReason: null,
-//
-// Na listagem do marketplace (GET /marketplaceParts), filtre apenas aprovados:
-//   WHERE moderationStatus = "approved"
-//   Ou se ainda não tem o campo: mostre todos (retrocompatibilidade)
-//
-// Para vendedores PREMIUM (campo isPremium: true no Firestore):
-//   Aprovar automaticamente na criação — defina moderationStatus: "approved" diretamente.
-//   Isso pode ser feito verificando o usuário no middleware antes de salvar.
-// ─────────────────────────────────────────────────────────────────────────────

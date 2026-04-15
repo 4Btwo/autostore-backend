@@ -1,12 +1,6 @@
 import { db } from "../config/firebase.js";
 
-// ─── Busca compatibilidades usando a coleção flat ────────────────────────────
-// Campos esperados em cada doc de `compatibilities`:
-//   brandSlug, modelSlug, engineDisplacement, fuelNorm, masterPartId, active
-//
-// Esses campos são adicionados automaticamente pelo script migrateCompatibilities.js
-// e já estarão presentes nos seeds novos (Mahle, NGK, Bosch, etc.)
-
+// ─── Busca IDs compatíveis na coleção flat ────────────────────────────────────
 export async function findCompatiblePartIds({
   brandSlug,
   modelSlug,
@@ -24,7 +18,6 @@ export async function findCompatiblePartIds({
 
   if (snapshot.empty) return [];
 
-  // Deduplica masterPartIds (uma peça pode ter múltiplos docs de compatibilidade)
   const ids = new Set();
   snapshot.docs.forEach((doc) => {
     const id = doc.data().masterPartId;
@@ -34,6 +27,16 @@ export async function findCompatiblePartIds({
   return [...ids];
 }
 
+// ─── Divide array em chunks para contornar limite de 10 do Firestore "in" ────
+function chunkArray(arr, size) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+// ─── Busca anúncios do marketplace com paginação ──────────────────────────────
 export async function findMarketplaceParts({
   masterPartIds,
   limit,
@@ -44,57 +47,90 @@ export async function findMarketplaceParts({
   condition,
   minWarranty,
 }) {
-  if (!masterPartIds.length)
-    return { data: [], pagination: { hasMore: false } };
+  if (!masterPartIds.length) return { data: [], pagination: { hasMore: false } };
 
-  // Firestore limita "in" a 10 itens — paginamos o array se necessário
-  const ids = masterPartIds.slice(0, 10);
+  const pageSize = limit || 10;
+  const chunks = chunkArray(masterPartIds, 10);
 
-  let query = db
-    .collection("marketplaceParts")
-    .where("masterPartId", "in", ids)
-    .where("active", "==", true);
+  // Busca todos os chunks em paralelo
+  const chunkResults = await Promise.all(
+    chunks.map((chunk) => {
+      let q = db
+        .collection("marketplaceParts")
+        .where("masterPartId", "in", chunk)
+        .where("active", "==", true)
+        .where("moderationStatus", "==", "approved");
 
-  if (minStock) query = query.where("stock", ">=", Number(minStock));
-  if (condition) query = query.where("condition", "==", condition);
-  if (minWarranty) query = query.where("warrantyMonths", ">=", Number(minWarranty));
+      if (minStock) q = q.where("stock", ">=", Number(minStock));
+      if (condition) q = q.where("condition", "==", condition);
+      if (minWarranty) q = q.where("warrantyMonths", ">=", Number(minWarranty));
 
-  query = query.orderBy(orderBy || "createdAt", orderDirection || "desc");
+      return q.get();
+    })
+  );
 
+  // Mescla e ordena todos os resultados
+  let allDocs = chunkResults.flatMap((snap) =>
+    snap.docs.map((doc) => ({ id: doc.id, ...doc.data(), _ref: doc }))
+  );
+
+  // Ordenação em memória após merge dos chunks
+  const direction = orderDirection === "asc" ? 1 : -1;
+  const field = orderBy || "createdAt";
+  allDocs.sort((a, b) => {
+    const av = a[field]?.toMillis?.() ?? a[field] ?? 0;
+    const bv = b[field]?.toMillis?.() ?? b[field] ?? 0;
+    return (av > bv ? 1 : av < bv ? -1 : 0) * direction;
+  });
+
+  // Paginação por cursor (lastDocId)
   if (lastDocId) {
-    const lastDoc = await db.collection("marketplaceParts").doc(lastDocId).get();
-    if (lastDoc.exists) query = query.startAfter(lastDoc);
+    const idx = allDocs.findIndex((d) => d.id === lastDocId);
+    if (idx !== -1) allDocs = allDocs.slice(idx + 1);
   }
 
-  query = query.limit(limit || 10);
-
-  const snapshot = await query.get();
-  const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-  const lastVisible = snapshot.docs[snapshot.docs.length - 1];
+  const page = allDocs.slice(0, pageSize);
+  const lastVisible = page[page.length - 1];
 
   return {
-    data,
+    data: page.map(({ _ref, ...rest }) => rest),
     pagination: {
-      hasMore: snapshot.docs.length === (limit || 10),
+      hasMore: allDocs.length > pageSize,
       lastDocId: lastVisible ? lastVisible.id : null,
     },
   };
 }
 
+// ─── Busca masterParts por IDs (com batching) ─────────────────────────────────
 export async function findMasterPartsByIds(ids) {
   if (!ids.length) return [];
-  const snapshot = await db
-    .collection("masterParts")
-    .where("__name__", "in", ids.slice(0, 10))
-    .get();
-  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const unique = [...new Set(ids)];
+  const chunks = chunkArray(unique, 10);
+
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      db.collection("masterParts").where("__name__", "in", chunk).get()
+    )
+  );
+
+  return results.flatMap((snap) =>
+    snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+  );
 }
 
+// ─── Busca categorias por IDs (com batching) ──────────────────────────────────
 export async function findCategoriesByIds(ids) {
   if (!ids.length) return [];
-  const snapshot = await db
-    .collection("categories")
-    .where("__name__", "in", ids.slice(0, 10))
-    .get();
-  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const unique = [...new Set(ids)];
+  const chunks = chunkArray(unique, 10);
+
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      db.collection("categories").where("__name__", "in", chunk).get()
+    )
+  );
+
+  return results.flatMap((snap) =>
+    snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+  );
 }

@@ -1,38 +1,37 @@
 import express from "express";
 import { db, admin } from "../config/firebase.js";
 import { authenticate } from "../middlewares/authMiddleware.js";
+import { validate, createReviewSchema } from "../middlewares/validate.js";
+import AppError from "../errors/AppError.js";
 
 const router = express.Router();
 
-// POST /reviews — criar avaliação
-router.post("/", authenticate, async (req, res, next) => {
+// POST /reviews
+router.post("/", authenticate, validate(createReviewSchema), async (req, res, next) => {
   try {
     const buyerId = req.user.uid;
     const { sellerId, orderId, rating, comment } = req.body;
 
-    if (!sellerId || !orderId || !rating) {
-      return res.status(400).json({ success: false, message: "sellerId, orderId e rating são obrigatórios" });
-    }
-    if (rating < 1 || rating > 5) {
-      return res.status(400).json({ success: false, message: "Rating deve ser entre 1 e 5" });
-    }
-
-    // Verifica se pedido existe e pertence ao comprador
     const orderDoc = await db.collection("orders").doc(orderId).get();
     if (!orderDoc.exists || orderDoc.data().buyerId !== buyerId) {
-      return res.status(403).json({ success: false, message: "Pedido não encontrado" });
+      throw new AppError("Pedido não encontrado ou não pertence a você", 403, "FORBIDDEN");
     }
 
-    // Verifica se já avaliou esse pedido
-    const existing = await db.collection("reviews")
+    if (orderDoc.data().status !== "delivered") {
+      throw new AppError("Só é possível avaliar pedidos entregues", 400, "ORDER_NOT_DELIVERED");
+    }
+
+    const existing = await db
+      .collection("reviews")
       .where("orderId", "==", orderId)
       .where("buyerId", "==", buyerId)
-      .limit(1).get();
+      .limit(1)
+      .get();
+
     if (!existing.empty) {
-      return res.status(400).json({ success: false, message: "Você já avaliou este pedido" });
+      throw new AppError("Você já avaliou este pedido", 400, "ALREADY_REVIEWED");
     }
 
-    // Salva avaliação
     const reviewRef = await db.collection("reviews").add({
       buyerId,
       sellerId,
@@ -42,16 +41,19 @@ router.post("/", authenticate, async (req, res, next) => {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // Atualiza média do vendedor
-    const reviewsSnap = await db.collection("reviews").where("sellerId", "==", sellerId).get();
-    const ratings = reviewsSnap.docs.map(d => d.data().rating);
+    // Recalcula média do vendedor
+    const reviewsSnap = await db
+      .collection("reviews")
+      .where("sellerId", "==", sellerId)
+      .get();
+    const ratings = reviewsSnap.docs.map((d) => d.data().rating);
     const avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+
     await db.collection("users").doc(sellerId).update({
       ratingAvg: Math.round(avg * 10) / 10,
       ratingCount: ratings.length,
     });
 
-    // Marca pedido como avaliado
     await db.collection("orders").doc(orderId).update({ reviewed: true });
 
     res.status(201).json({ success: true, data: { id: reviewRef.id } });
@@ -60,27 +62,40 @@ router.post("/", authenticate, async (req, res, next) => {
   }
 });
 
-// GET /reviews/seller/:sellerId — avaliações de um vendedor
+// GET /reviews/seller/:sellerId — N+1 corrigido
 router.get("/seller/:sellerId", async (req, res, next) => {
   try {
-    const snap = await db.collection("reviews")
+    const snap = await db
+      .collection("reviews")
       .where("sellerId", "==", req.params.sellerId)
       .orderBy("createdAt", "desc")
       .limit(20)
       .get();
 
-    const reviews = await Promise.all(snap.docs.map(async doc => {
+    if (snap.empty) return res.json({ success: true, data: [] });
+
+    // Busca todos os compradores de uma vez
+    const buyerIds = [...new Set(snap.docs.map((d) => d.data().buyerId))];
+    const buyerDocs = await Promise.all(
+      buyerIds.map((id) => db.collection("users").doc(id).get())
+    );
+    const buyerMap = {};
+    buyerDocs.forEach((doc) => {
+      if (doc.exists) buyerMap[doc.id] = doc.data();
+    });
+
+    const reviews = snap.docs.map((doc) => {
       const d = doc.data();
-      const buyerDoc = await db.collection("users").doc(d.buyerId).get();
+      const buyer = buyerMap[d.buyerId];
       return {
         id: doc.id,
         rating: d.rating,
         comment: d.comment,
         createdAt: d.createdAt?.toDate?.() ?? null,
-        buyerName: buyerDoc.exists ? buyerDoc.data().name?.split(" ")[0] : "Usuário",
-        buyerPhoto: buyerDoc.exists ? buyerDoc.data().photo || null : null,
+        buyerName: buyer?.name?.split(" ")[0] || "Usuário",
+        buyerPhoto: buyer?.photo || null,
       };
-    }));
+    });
 
     res.json({ success: true, data: reviews });
   } catch (error) {

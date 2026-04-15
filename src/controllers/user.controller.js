@@ -1,7 +1,9 @@
 import { db, admin } from "../config/firebase.js";
 import { uploadImage } from "../services/cloudinary.service.js";
+import AppError from "../errors/AppError.js";
+import logger from "../utils/logger.js";
 
-export async function createUserProfile(req, res) {
+export async function createUserProfile(req, res, next) {
   try {
     const uid = req.user.uid;
     const email = req.user.email;
@@ -10,52 +12,58 @@ export async function createUserProfile(req, res) {
     const userDoc = await userRef.get();
 
     if (userDoc.exists) {
-      return res.json({ success: true, message: "Usuário já existe" });
+      return res.json({ success: true, message: "Usuário já existe", data: userDoc.data() });
     }
 
     const newUser = {
       name: req.body.name || null,
-      email: email,
+      email,
       type: req.body.type || "buyer",
       sellerVerified: false,
+      isPremium: false,
+      isAdmin: false,
       active: true,
-      createdAt: new Date(),
+      ratingAvg: null,
+      ratingCount: 0,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     await userRef.set(newUser);
-    return res.json({ success: true, data: newUser });
-
+    logger.info("Novo usuário criado", { uid, email });
+    return res.status(201).json({ success: true, data: newUser });
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    next(error);
   }
 }
 
 export async function updateUserPhoto(req, res, next) {
   try {
-    console.log("📸 updateUserPhoto chamado");
-    console.log("  user:", req.user?.uid);
-    console.log("  file:", req.file ? `${req.file.originalname} (${req.file.size} bytes)` : "NENHUM");
-    console.log("  CLOUDINARY_CLOUD_NAME:", process.env.CLOUDINARY_CLOUD_NAME ? "✅" : "❌ FALTANDO");
-    console.log("  CLOUDINARY_API_KEY:", process.env.CLOUDINARY_API_KEY ? "✅" : "❌ FALTANDO");
-    console.log("  CLOUDINARY_API_SECRET:", process.env.CLOUDINARY_API_SECRET ? "✅" : "❌ FALTANDO");
-
     const uid = req.user.uid;
-    if (!req.file) return res.status(400).json({ success: false, message: "Nenhuma foto enviada" });
+    if (!req.file) throw new AppError("Nenhuma foto enviada", 400, "NO_FILE");
 
-    console.log("  Iniciando upload para Cloudinary...");
     const { url } = await uploadImage(req.file.buffer, "profiles");
-    console.log("  ✅ Upload concluído:", url);
 
     await db.collection("users").doc(uid).update({
       photo: url,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    console.log("  ✅ Firestore atualizado");
+    logger.info("Foto de usuário atualizada", { uid });
     return res.json({ success: true, data: { photo: url } });
   } catch (error) {
-    console.error("❌ Erro em updateUserPhoto:", error.message);
-    console.error(error.stack);
+    next(error);
+  }
+}
+
+export async function getMyProfile(req, res, next) {
+  try {
+    const uid = req.user.uid;
+    const doc = await db.collection("users").doc(uid).get();
+    if (!doc.exists) throw new AppError("Perfil não encontrado", 404, "NOT_FOUND");
+
+    const { isAdmin, ...safeData } = doc.data();
+    return res.json({ success: true, data: { id: doc.id, ...safeData } });
+  } catch (error) {
     next(error);
   }
 }
