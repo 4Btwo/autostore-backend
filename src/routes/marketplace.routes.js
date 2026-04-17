@@ -63,7 +63,7 @@ async function enrichItems(items) {
         uid: doc.id,
         name: s.name || s.displayName || "Loja",
         photo: s.photo || s.photoURL || null,
-        plan: s.plan || s.isPremium ? "premium" : "free",
+        plan: (s.plan === "premium" || s.isPremium === true) ? "premium" : "free",
         specialty: s.specialty || "Peças Automotivas",
         sellerVerified: s.sellerVerified || false,
         ratingAvg: s.ratingAvg || 0,
