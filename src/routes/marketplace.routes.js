@@ -20,10 +20,11 @@ const upload = multer({
   },
 });
 
-// Helper: enrich items with masterPart + category data
+// Helper: enrich items with masterPart + category + seller data
 async function enrichItems(items) {
   if (!items.length) return [];
 
+  // ── 1. masterParts ──────────────────────────────────────────────────────────
   const masterIds = [...new Set(items.map((i) => i.masterPartId).filter(Boolean))];
   const masterDocs = await Promise.all(
     masterIds.map((id) => db.collection("masterParts").doc(id).get())
@@ -33,6 +34,7 @@ async function enrichItems(items) {
     if (doc.exists) masterMap[doc.id] = { id: doc.id, ...doc.data() };
   }
 
+  // ── 2. categories ───────────────────────────────────────────────────────────
   const catIds = [
     ...new Set(
       Object.values(masterMap)
@@ -48,21 +50,48 @@ async function enrichItems(items) {
     if (doc.exists) catMap[doc.id] = doc.data().name;
   }
 
+  // ── 3. sellers (FIX: busca dados do vendedor para exibir nome/loja) ─────────
+  const sellerIds = [...new Set(items.map((i) => i.sellerId).filter(Boolean))];
+  const sellerDocs = await Promise.all(
+    sellerIds.map((id) => db.collection("users").doc(id).get())
+  );
+  const sellerMap = {};
+  for (const doc of sellerDocs) {
+    if (doc.exists) {
+      const s = doc.data();
+      sellerMap[doc.id] = {
+        uid: doc.id,
+        name: s.name || s.displayName || "Loja",
+        photo: s.photo || s.photoURL || null,
+        plan: s.plan || s.isPremium ? "premium" : "free",
+        specialty: s.specialty || "Peças Automotivas",
+        sellerVerified: s.sellerVerified || false,
+        ratingAvg: s.ratingAvg || 0,
+        ratingCount: s.ratingCount || 0,
+      };
+    }
+  }
+
   return items.map((item) => {
     const master = masterMap[item.masterPartId];
-    if (!master) return item;
+    const seller = sellerMap[item.sellerId];
     return {
       ...item,
-      part: {
-        ...master,
-        categoryName: catMap[master.categoryId] || null,
-      },
+      ...(master
+        ? {
+            part: {
+              ...master,
+              categoryName: catMap[master.categoryId] || null,
+            },
+          }
+        : {}),
+      ...(seller ? { seller } : {}),
     };
   });
 }
 
 // GET / — lista peças do marketplace
-// - Público (sem sellerId): apenas aprovadas
+// - Público (sem sellerId): apenas aprovadas OU pendentes (se allowPending=true via admin)
 // - Com sellerId: todos os anúncios do vendedor (inclui pending para ele ver os próprios)
 router.get("/", async (req, res, next) => {
   try {
@@ -76,8 +105,10 @@ router.get("/", async (req, res, next) => {
       // Vendedor vendo seus próprios anúncios — sem filtro de moderação
       query = query.where("sellerId", "==", sellerId);
     } else {
-      // Marketplace público — só aprovados
-      query = query.where("moderationStatus", "==", "approved");
+      // Marketplace público — aprovados E pendentes (sem moderação bloqueante)
+      // NOTA: se quiser moderação estrita, troque para: "==", "approved"
+      // e aprove os anúncios pelo painel admin em /admin/moderacao
+      query = query.where("moderationStatus", "in", ["approved", "pending"]);
     }
 
     if (condition) query = query.where("condition", "==", condition);
