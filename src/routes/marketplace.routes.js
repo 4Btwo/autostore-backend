@@ -20,17 +20,66 @@ const upload = multer({
   },
 });
 
-// GET / — lista peças aprovadas do marketplace
+// Helper: enrich items with masterPart + category data
+async function enrichItems(items) {
+  if (!items.length) return [];
+
+  const masterIds = [...new Set(items.map((i) => i.masterPartId).filter(Boolean))];
+  const masterDocs = await Promise.all(
+    masterIds.map((id) => db.collection("masterParts").doc(id).get())
+  );
+  const masterMap = {};
+  for (const doc of masterDocs) {
+    if (doc.exists) masterMap[doc.id] = { id: doc.id, ...doc.data() };
+  }
+
+  const catIds = [
+    ...new Set(
+      Object.values(masterMap)
+        .map((m) => m.categoryId)
+        .filter(Boolean)
+    ),
+  ];
+  const catDocs = await Promise.all(
+    catIds.map((id) => db.collection("categories").doc(id).get())
+  );
+  const catMap = {};
+  for (const doc of catDocs) {
+    if (doc.exists) catMap[doc.id] = doc.data().name;
+  }
+
+  return items.map((item) => {
+    const master = masterMap[item.masterPartId];
+    if (!master) return item;
+    return {
+      ...item,
+      part: {
+        ...master,
+        categoryName: catMap[master.categoryId] || null,
+      },
+    };
+  });
+}
+
+// GET / — lista peças do marketplace
+// - Público (sem sellerId): apenas aprovadas
+// - Com sellerId: todos os anúncios do vendedor (inclui pending para ele ver os próprios)
 router.get("/", async (req, res, next) => {
   try {
     const { sellerId, condition, limit = 20, lastDocId } = req.query;
 
     let query = db
       .collection("marketplaceParts")
-      .where("active", "==", true)
-      .where("moderationStatus", "==", "approved");
+      .where("active", "==", true);
 
-    if (sellerId) query = query.where("sellerId", "==", sellerId);
+    if (sellerId) {
+      // Vendedor vendo seus próprios anúncios — sem filtro de moderação
+      query = query.where("sellerId", "==", sellerId);
+    } else {
+      // Marketplace público — só aprovados
+      query = query.where("moderationStatus", "==", "approved");
+    }
+
     if (condition) query = query.where("condition", "==", condition);
 
     query = query.orderBy("createdAt", "desc").limit(Number(limit));
@@ -42,41 +91,7 @@ router.get("/", async (req, res, next) => {
 
     const snap = await query.get();
     const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-
-    const masterIds = [
-      ...new Set(items.map((i) => i.masterPartId).filter(Boolean)),
-    ];
-    const masterDocs = await Promise.all(
-      masterIds.map((id) => db.collection("masterParts").doc(id).get())
-    );
-    const masterMap = {};
-    for (const doc of masterDocs) {
-      if (doc.exists) masterMap[doc.id] = doc.data();
-    }
-
-    const catIds = [
-      ...new Set(
-        Object.values(masterMap)
-          .map((m) => m.categoryId)
-          .filter(Boolean)
-      ),
-    ];
-    const catDocs = await Promise.all(
-      catIds.map((id) => db.collection("categories").doc(id).get())
-    );
-    const catMap = {};
-    for (const doc of catDocs) {
-      if (doc.exists) catMap[doc.id] = doc.data().name;
-    }
-
-    const data = items.map((item) => {
-      const master = masterMap[item.masterPartId];
-      if (!master) return item;
-      return {
-        ...item,
-        part: { ...master, categoryName: catMap[master.categoryId] || null },
-      };
-    });
+    const data = await enrichItems(items);
 
     const lastVisible = snap.docs[snap.docs.length - 1];
     res.json({

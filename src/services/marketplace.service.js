@@ -27,8 +27,8 @@ export async function createMarketplacePartService(data) {
     const newMaster = await masterPartsRef.add({
       name,
       oemNumber,
-      brandId,
-      categoryId,
+      brandId: brandId || "",
+      categoryId: categoryId || "",
       description: description || "",
       images: images || [],
       weightKg: 0,
@@ -39,6 +39,11 @@ export async function createMarketplacePartService(data) {
     masterPartId = newMaster.id;
   } else {
     masterPartId = masterQuery.docs[0].id;
+    // Se o masterPart existia mas não tinha imagens, atualiza
+    const existingMaster = masterQuery.docs[0].data();
+    if (images?.length && (!existingMaster.images || !existingMaster.images.length)) {
+      await masterPartsRef.doc(masterPartId).update({ images });
+    }
   }
 
   const marketplaceRef = db.collection("marketplaceParts");
@@ -53,15 +58,20 @@ export async function createMarketplacePartService(data) {
     const currentStock = doc.data().stock || 0;
     await marketplaceRef.doc(doc.id).update({
       stock: currentStock + Number(stock),
+      price: Number(price),
+      condition,
+      warrantyMonths: Number(warrantyMonths || 0),
+      images: images?.length ? images : doc.data().images || [],
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     return { message: "Estoque atualizado", marketplacePartId: doc.id };
   }
 
-  // Verifica se o vendedor tem aprovação automática (isPremium)
+  // Verifica se o vendedor tem aprovação automática (isPremium ou sellerVerified)
   const sellerDoc = await db.collection("users").doc(sellerId).get();
-  const isPremium = sellerDoc.exists && sellerDoc.data().isPremium === true;
-  const moderationStatus = isPremium ? "approved" : "pending";
+  const sellerData = sellerDoc.exists ? sellerDoc.data() : {};
+  const isAutoApproved = sellerData.isPremium === true || sellerData.sellerVerified === true;
+  const moderationStatus = isAutoApproved ? "approved" : "pending";
 
   const newMarketplace = await marketplaceRef.add({
     sellerId,
@@ -71,9 +81,11 @@ export async function createMarketplacePartService(data) {
     condition,
     warrantyMonths: Number(warrantyMonths || 0),
     images: images || [],
-    active: isPremium, // só ativo imediatamente se premium
+    // CORREÇÃO: active=true sempre para que o vendedor veja o próprio anúncio
+    // moderationStatus controla visibilidade no marketplace público
+    active: true,
     moderationStatus,
-    approvedAt: isPremium ? new Date().toISOString() : null,
+    approvedAt: isAutoApproved ? new Date().toISOString() : null,
     rejectedAt: null,
     rejectionReason: null,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -81,7 +93,7 @@ export async function createMarketplacePartService(data) {
   });
 
   // Notifica vendedor sobre status
-  if (!isPremium) {
+  if (!isAutoApproved) {
     await db.collection("notifications").add({
       userId: sellerId,
       type: "listing_pending",
@@ -90,12 +102,12 @@ export async function createMarketplacePartService(data) {
       partId: newMarketplace.id,
       read: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    }).catch(() => {}); // não bloquear se falhar
   }
 
   return {
-    message: isPremium
-      ? "Peça cadastrada e aprovada automaticamente"
+    message: isAutoApproved
+      ? "Peça cadastrada e publicada com sucesso!"
       : "Peça cadastrada. Aguardando aprovação da moderação.",
     marketplacePartId: newMarketplace.id,
     moderationStatus,
