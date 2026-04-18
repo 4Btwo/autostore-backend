@@ -68,6 +68,7 @@ async function enrichItems(items) {
         sellerVerified: s.sellerVerified || false,
         ratingAvg: s.ratingAvg || 0,
         ratingCount: s.ratingCount || 0,
+        coords: s.coords || null, // {lat, lng} para ordenação por proximidade
       };
     }
   }
