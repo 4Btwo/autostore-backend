@@ -7,7 +7,7 @@ import {
 } from "../controllers/marketplace.controller.js";
 import { authenticate } from "../middlewares/authMiddleware.js";
 import { validate, createMarketplacePartSchema } from "../middlewares/validate.js";
-import { apiLimiter } from "../middlewares/rateLimiter.js";
+import { apiLimiter, publicLimiter } from "../middlewares/rateLimiter.js";
 
 const router = express.Router();
 
@@ -94,7 +94,7 @@ async function enrichItems(items) {
 // GET / — lista peças do marketplace
 // - Público (sem sellerId): apenas aprovadas OU pendentes (se allowPending=true via admin)
 // - Com sellerId: todos os anúncios do vendedor (inclui pending para ele ver os próprios)
-router.get("/", async (req, res, next) => {
+router.get("/", publicLimiter, async (req, res, next) => {
   try {
     const { sellerId, condition, limit = 20, lastDocId } = req.query;
 
@@ -140,7 +140,7 @@ router.get("/", async (req, res, next) => {
 });
 
 // GET /:id
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", publicLimiter, async (req, res, next) => {
   try {
     const doc = await db
       .collection("marketplaceParts")

@@ -28,11 +28,22 @@ import logger from "./utils/logger.js";
 const app = express();
 
 // ─── CORS ──────────────────────────────────────────────────────────────────────
+// Em produção, exige FRONTEND_URL explícito; em dev aceita localhost
+const allowedOrigins = process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL]
+  : ["http://localhost:5173", "http://localhost:3001", "http://localhost:4173"];
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "*",
+    origin: (origin, callback) => {
+      // Permite requests sem origin (mobile, Postman, curl)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.some((o) => origin.startsWith(o))) return callback(null, true);
+      callback(new Error(`CORS: origin não permitida — ${origin}`));
+    },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   })
 );
 

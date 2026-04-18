@@ -22,6 +22,76 @@ export async function listMyOrders(req, res, next) {
   }
 }
 
+// ─── Pedidos do vendedor com dados de comprador enriquecidos ──────────────────
+export async function listSellerOrders(req, res, next) {
+  try {
+    const sellerId = req.user.uid;
+    const { db } = await import("../config/firebase.js");
+
+    // Busca pedidos que contêm itens do vendedor
+    const snap = await db
+      .collection("orders")
+      .where("sellerIds", "array-contains", sellerId)
+      .orderBy("createdAt", "desc")
+      .limit(100)
+      .get();
+
+    // Fallback: se sellerIds não existir, busca por items.sellerId
+    let orders = snap.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate?.() ?? null,
+      updatedAt: doc.data().updatedAt?.toDate?.() ?? null,
+    }));
+
+    // Se não encontrou via sellerIds, tenta via items
+    if (orders.length === 0) {
+      const allSnap = await db
+        .collection("orders")
+        .orderBy("createdAt", "desc")
+        .limit(500)
+        .get();
+      orders = allSnap.docs
+        .filter((doc) => {
+          const data = doc.data();
+          return data.items?.some((item) => item.sellerId === sellerId);
+        })
+        .map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate?.() ?? null,
+          updatedAt: doc.data().updatedAt?.toDate?.() ?? null,
+        }));
+    }
+
+    // Enriquecer com nome do comprador (batch lookup)
+    const buyerIds = [...new Set(orders.map((o) => o.buyerId).filter(Boolean))];
+    const buyerDocs = await Promise.all(
+      buyerIds.map((id) => db.collection("users").doc(id).get())
+    );
+    const buyerMap = {};
+    buyerDocs.forEach((doc) => {
+      if (doc.exists) buyerMap[doc.id] = doc.data().name || doc.data().email || "Comprador";
+    });
+
+    // Filtra apenas itens do vendedor e calcula total do vendedor
+    const enriched = orders.map((order) => {
+      const myItems = (order.items || []).filter((i) => i.sellerId === sellerId);
+      const myTotal = myItems.reduce((s, i) => s + Number(i.price || 0) * Number(i.quantity || 1), 0);
+      return {
+        ...order,
+        buyerName: buyerMap[order.buyerId] || "Comprador",
+        myItems,
+        myTotal,
+      };
+    });
+
+    return successResponse(res, enriched);
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function updateStatus(req, res, next) {
   try {
     const { orderId } = req.params;
