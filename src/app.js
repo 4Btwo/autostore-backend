@@ -28,6 +28,9 @@ import logger from "./utils/logger.js";
 
 const app = express();
 
+// ─── Trust proxy (Render / Vercel / proxies reversos) ─────────────────────────
+app.set("trust proxy", 1);
+
 // ─── CORS ──────────────────────────────────────────────────────────────────────
 // Em produção, exige FRONTEND_URL explícito; em dev aceita localhost
 const allowedOrigins = process.env.FRONTEND_URL
