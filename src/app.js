@@ -19,6 +19,7 @@ import ordersRoutes from "./routes/orders.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import reviewsRoutes from "./routes/reviews.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
+import agentRoutes from "./routes/agent.routes.js";
 
 // Middlewares
 import errorMiddleware from "./middlewares/error.middleware.js";
@@ -109,6 +110,7 @@ app.use("/orders", ordersRoutes);
 app.use("/payments", paymentRoutes);
 app.use("/reviews", reviewsRoutes);
 app.use("/admin", adminRoutes);
+app.use("/agent", agentRoutes);
 
 // ─── Documentação ─────────────────────────────────────────────────────────────
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
