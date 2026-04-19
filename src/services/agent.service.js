@@ -1,89 +1,85 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getVehicleByPlate } from "./plate.service.js";
 import { executeSearch } from "./search.service.js";
 import { lookupChassi, generateDesmancheCatalog } from "./chassi.service.js";
 import { db } from "../config/firebase.js";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// ─── Definição das tools ──────────────────────────────────────────────────────
+// ─── Definição das tools (formato Gemini) ─────────────────────────────────────
 
 const TOOLS = [
   {
-    name: "buscar_veiculo_por_placa",
-    description:
-      "Busca dados técnicos do veículo pela placa (marca, modelo, ano, motor, combustível). " +
-      "Use SEMPRE que o usuário informar uma placa antes de buscar qualquer peça.",
-    input_schema: {
-      type: "object",
-      properties: {
-        placa: {
-          type: "string",
-          description: "Placa do veículo. Exemplos: ABC1234, BRA2E19",
+    functionDeclarations: [
+      {
+        name: "buscar_veiculo_por_placa",
+        description:
+          "Busca dados técnicos do veículo pela placa (marca, modelo, ano, motor, combustível). " +
+          "Use SEMPRE que o usuário informar uma placa antes de buscar qualquer peça.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            placa: {
+              type: "STRING",
+              description: "Placa do veículo. Exemplos: ABC1234, BRA2E19",
+            },
+          },
+          required: ["placa"],
         },
       },
-      required: ["placa"],
-    },
-  },
-  {
-    name: "buscar_pecas_por_veiculo",
-    description:
-      "Busca todas as peças disponíveis no catálogo OEM para um veículo específico. " +
-      "Use após identificar o veículo pela placa. Retorna peças com OEM, preço e disponibilidade.",
-    input_schema: {
-      type: "object",
-      properties: {
-        brand: { type: "string", description: "Marca do veículo. Ex: volkswagen" },
-        model: { type: "string", description: "Modelo do veículo. Ex: gol" },
-        engineDisplacement: {
-          type: "string",
-          description: "Motor do veículo. Ex: 1.0 flex",
-        },
-        fuelType: { type: "string", description: "Combustível. Ex: flex" },
-        nomePeca: {
-          type: "string",
-          description:
-            "Nome da peça que o usuário quer buscar. Opcional — se não informado, retorna todas as peças do veículo.",
+      {
+        name: "buscar_pecas_por_veiculo",
+        description:
+          "Busca todas as peças disponíveis no catálogo OEM para um veículo específico. " +
+          "Use após identificar o veículo pela placa. Retorna peças com OEM, preço e disponibilidade.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            brand: { type: "STRING", description: "Marca do veículo. Ex: volkswagen" },
+            model: { type: "STRING", description: "Modelo do veículo. Ex: gol" },
+            engineDisplacement: { type: "STRING", description: "Motor do veículo. Ex: 1.0 flex" },
+            fuelType: { type: "STRING", description: "Combustível. Ex: flex" },
+            nomePeca: {
+              type: "STRING",
+              description: "Nome da peça que o usuário quer buscar. Opcional.",
+            },
+          },
+          required: ["brand", "model", "engineDisplacement", "fuelType"],
         },
       },
-      required: ["brand", "model", "engineDisplacement", "fuelType"],
-    },
-  },
-  {
-    name: "validar_oem_para_anuncio",
-    description:
-      "Valida se um código OEM existe no catálogo masterParts e se é compatível com o veículo informado. " +
-      "Use quando o vendedor quiser publicar uma peça e informar o código OEM.",
-    input_schema: {
-      type: "object",
-      properties: {
-        oemNumber: {
-          type: "string",
-          description: "Código OEM da peça. Ex: 45022-SNA-A00",
-        },
-        brand: { type: "string", description: "Marca do veículo. Ex: honda" },
-        model: { type: "string", description: "Modelo do veículo. Ex: civic" },
-        year: { type: "string", description: "Ano do veículo. Ex: 2018" },
-      },
-      required: ["oemNumber"],
-    },
-  },
-  {
-    name: "consultar_chassi",
-    description:
-      "Consulta dados técnicos de um veículo pelo número do chassi (VIN de 17 caracteres) " +
-      "e retorna o catálogo de peças disponíveis para desmanche. " +
-      "Use quando o vendedor de desmanche informar o número do chassi.",
-    input_schema: {
-      type: "object",
-      properties: {
-        chassi: {
-          type: "string",
-          description: "Número do chassi (VIN) com 17 caracteres. Ex: 9BWZZZ377VT004251",
+      {
+        name: "validar_oem_para_anuncio",
+        description:
+          "Valida se um código OEM existe no catálogo masterParts e se é compatível com o veículo informado. " +
+          "Use quando o vendedor quiser publicar uma peça e informar o código OEM.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            oemNumber: { type: "STRING", description: "Código OEM da peça. Ex: 45022-SNA-A00" },
+            brand: { type: "STRING", description: "Marca do veículo. Ex: honda" },
+            model: { type: "STRING", description: "Modelo do veículo. Ex: civic" },
+            year: { type: "STRING", description: "Ano do veículo. Ex: 2018" },
+          },
+          required: ["oemNumber"],
         },
       },
-      required: ["chassi"],
-    },
+      {
+        name: "consultar_chassi",
+        description:
+          "Consulta dados técnicos de um veículo pelo número do chassi (VIN de 17 caracteres) " +
+          "e retorna o catálogo de peças disponíveis para desmanche.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            chassi: {
+              type: "STRING",
+              description: "Número do chassi (VIN) com 17 caracteres. Ex: 9BWZZZ377VT004251",
+            },
+          },
+          required: ["chassi"],
+        },
+      },
+    ],
   },
 ];
 
@@ -151,8 +147,7 @@ Regras obrigatórias:
 async function executarTool(nome, params) {
   switch (nome) {
     case "buscar_veiculo_por_placa": {
-      const veiculo = await getVehicleByPlate(params.placa);
-      return veiculo;
+      return await getVehicleByPlate(params.placa);
     }
 
     case "buscar_pecas_por_veiculo": {
@@ -166,7 +161,6 @@ async function executarTool(nome, params) {
         orderDirection: "desc",
       });
 
-      // Filtra por nome da peça se informado
       if (params.nomePeca && resultado.data?.length) {
         const termo = params.nomePeca.toLowerCase();
         const filtrado = resultado.data.filter(
@@ -205,7 +199,6 @@ async function executarTool(nome, params) {
     }
 
     case "validar_oem_para_anuncio": {
-      // Busca o OEM no masterParts
       const masterSnap = await db
         .collection("masterParts")
         .where("oemNumber", "==", params.oemNumber)
@@ -221,7 +214,6 @@ async function executarTool(nome, params) {
 
       const masterPart = { id: masterSnap.docs[0].id, ...masterSnap.docs[0].data() };
 
-      // Se informou veículo, verifica compatibilidade na coleção compatibilities
       if (params.brand && params.model) {
         const compatSnap = await db
           .collection("compatibilities")
@@ -231,23 +223,16 @@ async function executarTool(nome, params) {
 
         const compativel = compatSnap.docs.some((doc) => {
           const d = doc.data();
-          const brandMatch = d.brandSlug
-            ?.toLowerCase()
-            .includes(params.brand.toLowerCase());
-          const modelMatch = d.modelSlug
-            ?.toLowerCase()
-            .includes(params.model.toLowerCase());
-          return brandMatch && modelMatch;
+          return (
+            d.brandSlug?.toLowerCase().includes(params.brand.toLowerCase()) &&
+            d.modelSlug?.toLowerCase().includes(params.model.toLowerCase())
+          );
         });
 
         return {
           valido: true,
           compativel,
-          peca: {
-            nome: masterPart.name,
-            oem: masterPart.oemNumber,
-            descricao: masterPart.description,
-          },
+          peca: { nome: masterPart.name, oem: masterPart.oemNumber, descricao: masterPart.description },
           motivo: compativel
             ? "OEM válido e compatível com o veículo informado."
             : "OEM existe no catálogo, mas não há compatibilidade cadastrada para este veículo específico.",
@@ -256,11 +241,7 @@ async function executarTool(nome, params) {
 
       return {
         valido: true,
-        peca: {
-          nome: masterPart.name,
-          oem: masterPart.oemNumber,
-          descricao: masterPart.description,
-        },
+        peca: { nome: masterPart.name, oem: masterPart.oemNumber, descricao: masterPart.description },
         motivo: "OEM encontrado no catálogo.",
       };
     }
@@ -268,7 +249,6 @@ async function executarTool(nome, params) {
     case "consultar_chassi": {
       const veiculo = await lookupChassi(params.chassi);
       const catalogo = await generateDesmancheCatalog(params.chassi, veiculo);
-
       return {
         veiculo,
         subcolecoes: catalogo?.subcollections?.map((sub) => ({
@@ -288,49 +268,57 @@ async function executarTool(nome, params) {
 // ─── Agente principal ─────────────────────────────────────────────────────────
 
 export async function runAgent({ message, profile }) {
-  const messages = [{ role: "user", content: message }];
+  const model = genAI.getGenerativeModel({
+    model: "gemini-1.5-flash",
+    systemInstruction: getSystemPrompt(profile),
+    tools: TOOLS,
+  });
+
+  const chat = model.startChat({ history: [] });
+
+  let currentMessage = message;
 
   // Loop agentic — continua até o modelo parar de chamar tools
   while (true) {
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
-      system: getSystemPrompt(profile),
-      tools: TOOLS,
-      messages,
-    });
+    const result = await chat.sendMessage(currentMessage);
+    const response = result.response;
+    const candidate = response.candidates?.[0];
 
-    // Adiciona resposta do assistente ao histórico local do loop
-    messages.push({ role: "assistant", content: response.content });
-
-    // Sem mais tools — retorna resposta final ao usuário
-    if (response.stop_reason === "end_turn") {
-      const textBlock = response.content.find((b) => b.type === "text");
-      return textBlock?.text ?? "Não consegui processar sua solicitação. Tente novamente.";
+    if (!candidate) {
+      return "Não consegui processar sua solicitação. Tente novamente.";
     }
 
-    // Executa as tools solicitadas e alimenta o loop
-    if (response.stop_reason === "tool_use") {
-      const toolResults = [];
+    const parts = candidate.content?.parts || [];
+    const toolCalls = parts.filter((p) => p.functionCall);
 
-      for (const block of response.content) {
-        if (block.type !== "tool_use") continue;
+    // Sem tools — retorna o texto final
+    if (toolCalls.length === 0) {
+      const textPart = parts.find((p) => p.text);
+      return textPart?.text ?? "Não consegui processar sua solicitação. Tente novamente.";
+    }
 
-        let resultado;
-        try {
-          resultado = await executarTool(block.name, block.input);
-        } catch (err) {
-          resultado = { erro: `Falha ao executar ${block.name}: ${err.message}` };
-        }
+    // Executa todas as tools e monta as respostas
+    const toolResponses = [];
 
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: JSON.stringify(resultado),
-        });
+    for (const part of toolCalls) {
+      const { name, args } = part.functionCall;
+      let resultado;
+
+      try {
+        resultado = await executarTool(name, args);
+      } catch (err) {
+        resultado = { erro: `Falha ao executar ${name}: ${err.message}` };
       }
 
-      messages.push({ role: "user", content: toolResults });
+      toolResponses.push({
+        functionResponse: {
+          name,
+          response: resultado,
+        },
+      });
     }
+
+    // Alimenta os resultados de volta para o modelo continuar
+    currentMessage = toolResponses;
   }
 }
