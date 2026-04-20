@@ -107,7 +107,10 @@ export async function getOrdersBySeller(sellerId) {
 }
 
 export async function updateOrderStatus(orderId, newStatus) {
-  const allowed = ["pending", "confirmed", "shipped", "delivered", "cancelled"];
+  const allowed = [
+    "pending", "awaiting_payment", "confirmed", "shipped",
+    "delivered", "cancelled", "payment_failed", "refunded",
+  ];
   if (!allowed.includes(newStatus))
     throw new AppError("Status inválido", 400, "INVALID_STATUS");
 

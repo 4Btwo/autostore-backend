@@ -46,3 +46,12 @@ export const webhookLimiter = rateLimit({
   legacyHeaders: false,
   handler,
 });
+
+// Agente IA: cada chamada pode acionar múltiplas queries + API Groq
+export const agentLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  max: 15,             // 15 mensagens/min por IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler,
+});

@@ -106,10 +106,8 @@ router.get("/", publicLimiter, async (req, res, next) => {
       // Vendedor vendo seus próprios anúncios — sem filtro de moderação
       query = query.where("sellerId", "==", sellerId);
     } else {
-      // Marketplace público — aprovados E pendentes (sem moderação bloqueante)
-      // NOTA: se quiser moderação estrita, troque para: "==", "approved"
-      // e aprove os anúncios pelo painel admin em /admin/moderacao
-      query = query.where("moderationStatus", "in", ["approved", "pending"]);
+      // Marketplace público — somente peças aprovadas pela moderação
+      query = query.where("moderationStatus", "==", "approved");
     }
 
     if (condition) query = query.where("condition", "==", condition);

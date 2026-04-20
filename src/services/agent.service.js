@@ -281,14 +281,30 @@ async function executarTool(nome, params) {
 
 // ─── Agente principal ─────────────────────────────────────────────────────────
 
-export async function runAgent({ message, profile }) {
+/**
+ * @param {string} message - Mensagem atual do usuário
+ * @param {string} profile - buyer | seller | dismantler
+ * @param {Array}  history - Histórico anterior: [{ role: "user"|"assistant", content: string }]
+ */
+export async function runAgent({ message, profile, history = [] }) {
+  // Reconstrói o histórico de conversa para dar contexto ao modelo
+  const historyMessages = history
+    .slice(-20) // máximo de 20 mensagens para não explodir o contexto
+    .map((m) => ({ role: m.role, content: m.content }));
+
   const messages = [
     { role: "system", content: getSystemPrompt(profile) },
+    ...historyMessages,
     { role: "user", content: message },
   ];
 
+  // Guard contra loop infinito — máximo de 10 ciclos de tool call
+  let iterations = 0;
+  const MAX_ITERATIONS = 10;
+
   // Loop agentic — continua até o modelo parar de chamar tools
-  while (true) {
+  while (iterations < MAX_ITERATIONS) {
+    iterations++;
     const response = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       messages,
@@ -328,4 +344,7 @@ export async function runAgent({ message, profile }) {
 
     // Continua o loop para o modelo processar os resultados
   }
+
+  // Fallback caso estoure o limite de iterações
+  return "Desculpe, não consegui processar sua solicitação. Por favor, tente novamente.";
 }

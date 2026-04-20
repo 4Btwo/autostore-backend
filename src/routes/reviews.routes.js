@@ -21,6 +21,15 @@ router.post("/", authenticate, validate(createReviewSchema), async (req, res, ne
       throw new AppError("Só é possível avaliar pedidos entregues", 400, "ORDER_NOT_DELIVERED");
     }
 
+    // Garante que o vendedor avaliado realmente participou do pedido
+    const orderData = orderDoc.data();
+    const sellerInOrder =
+      orderData.sellerIds?.includes(sellerId) ||
+      orderData.items?.some((i) => i.sellerId === sellerId);
+    if (!sellerInOrder) {
+      throw new AppError("Vendedor não faz parte deste pedido", 400, "SELLER_NOT_IN_ORDER");
+    }
+
     const existing = await db
       .collection("reviews")
       .where("orderId", "==", orderId)
@@ -41,17 +50,24 @@ router.post("/", authenticate, validate(createReviewSchema), async (req, res, ne
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // Recalcula média do vendedor
-    const reviewsSnap = await db
-      .collection("reviews")
-      .where("sellerId", "==", sellerId)
-      .get();
-    const ratings = reviewsSnap.docs.map((d) => d.data().rating);
-    const avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+    // Atualiza média do vendedor atomicamente via transação
+    // Evita race condition quando duas avaliações chegam ao mesmo tempo
+    await db.runTransaction(async (tx) => {
+      const sellerRef = db.collection("users").doc(sellerId);
+      const sellerDoc = await tx.get(sellerRef);
+      if (!sellerDoc.exists) return;
 
-    await db.collection("users").doc(sellerId).update({
-      ratingAvg: Math.round(avg * 10) / 10,
-      ratingCount: ratings.length,
+      const data = sellerDoc.data();
+      const prevCount = data.ratingCount || 0;
+      const prevAvg = data.ratingAvg || 0;
+      const newCount = prevCount + 1;
+      // Média incremental: evita re-ler todas as avaliações
+      const newAvg = (prevAvg * prevCount + Number(rating)) / newCount;
+
+      tx.update(sellerRef, {
+        ratingAvg: Math.round(newAvg * 10) / 10,
+        ratingCount: newCount,
+      });
     });
 
     await db.collection("orders").doc(orderId).update({ reviewed: true });

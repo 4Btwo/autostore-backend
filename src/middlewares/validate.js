@@ -81,7 +81,7 @@ export const searchPartsSchema = z.object({
 
 export const updateOrderStatusSchema = z.object({
   status: z.enum(
-    ["pending", "confirmed", "shipped", "delivered", "cancelled"],
+    ["pending", "awaiting_payment", "confirmed", "shipped", "delivered", "cancelled", "payment_failed", "refunded"],
     { errorMap: () => ({ message: "Status inválido" }) }
   ),
 });
