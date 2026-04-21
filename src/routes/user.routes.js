@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import {
   createUserProfile,
+  activatePlan,
   updateProfile,
   updateUserPhoto,
   getMyProfile,
@@ -22,6 +23,7 @@ const upload = multer({
 router.post("/create-profile", authenticate, createUserProfile);
 router.get("/me", authenticate, getMyProfile);
 router.patch("/profile", authenticate, updateProfile);
+router.patch("/plan", authenticate, activatePlan);
 router.patch("/photo", authenticate, upload.single("photo"), updateUserPhoto);
 
 export default router;

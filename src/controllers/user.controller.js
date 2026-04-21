@@ -36,12 +36,31 @@ export async function createUserProfile(req, res, next) {
   }
 }
 
+export async function activatePlan(req, res, next) {
+  try {
+    const uid = req.user.uid;
+    const { plan } = req.body;
+    if (plan !== "premium" && plan !== "free") {
+      throw new AppError("Plano inválido", 400, "VALIDATION_ERROR");
+    }
+    await db.collection("users").doc(uid).update({
+      plan,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    logger.info("Plano atualizado", { uid, plan });
+    return res.json({ success: true, data: { plan } });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function updateProfile(req, res, next) {
   try {
     const uid = req.user.uid;
-    const { name, bio, specialty, coords, plan } = req.body;
+    const { name, bio, specialty, coords } = req.body;
 
     // Apenas campos não-sensíveis podem ser alterados por este endpoint
+    // NOTA: "plan" é controlado exclusivamente pelo webhook de pagamento
     const updates = {};
     if (typeof name === "string" && name.trim()) updates.name = name.trim().slice(0, 100);
     if (typeof bio === "string") updates.bio = bio.trim().slice(0, 300);
@@ -49,7 +68,6 @@ export async function updateProfile(req, res, next) {
     if (coords && typeof coords.lat === "number" && typeof coords.lng === "number") {
       updates.coords = { lat: coords.lat, lng: coords.lng };
     }
-    if (plan === "premium" || plan === "free") updates.plan = plan;
 
     if (!Object.keys(updates).length) {
       throw new AppError("Nenhum campo válido para atualizar", 400, "VALIDATION_ERROR");
