@@ -42,19 +42,30 @@ export const createOrderSchema = z.object({
     .optional(),
 });
 
+// ─── Marketplace listing schema (STRICT — catalog-controlled) ────────────────
+// Sellers MUST reference an existing masterPartId.
+// Free-form product creation is NOT allowed.
 export const createMarketplacePartSchema = z.object({
-  oemNumber: z.string().min(1, "OEM obrigatório"),
-  name: z.string().min(2, "Nome obrigatório"),
-  // brandId e categoryId são opcionais — masterParts do catálogo nem sempre têm esses IDs
-  brandId: z.string().optional().default(""),
-  categoryId: z.string().optional().default(""),
-  description: z.string().optional().default(""),
+  // Required: must point to an existing masterParts document
+  masterPartId: z.string().min(1, "masterPartId é obrigatório — selecione uma peça do catálogo"),
+
+  // Required: seller must explicitly confirm compatibility
+  sellerConfirmedCompatibility: z.literal(true, {
+    errorMap: () => ({
+      message: "Você deve confirmar a compatibilidade (sellerConfirmedCompatibility: true)",
+    }),
+  }),
+
   price: z.coerce.number().positive("Preço deve ser positivo"),
   stock: z.coerce.number().int().nonnegative("Estoque não pode ser negativo"),
-  condition: z.enum(["new", "used", "refurbished"], {
-    errorMap: () => ({ message: "Condição: new, used ou refurbished" }),
+
+  // Only "new" or "used" — no free-form condition
+  condition: z.enum(["new", "used"], {
+    errorMap: () => ({ message: 'Condição deve ser "new" ou "used"' }),
   }),
-  warrantyMonths: z.coerce.number().int().nonnegative().optional().default(0),
+
+  state:       z.string().max(100).optional().default(""),
+  sellerNotes: z.string().max(500).optional().default(""),
 });
 
 export const createReviewSchema = z.object({

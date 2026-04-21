@@ -9,7 +9,7 @@ import AppError from "../errors/AppError.js";
 export async function createMarketplacePart(req, res, next) {
   try {
     const sellerId = req.user.uid;
-    const files = req.files || [];
+    const files    = req.files || [];
 
     const imageUploads = await Promise.all(
       files.map((file) => uploadImage(file.buffer, "parts"))
@@ -20,6 +20,9 @@ export async function createMarketplacePart(req, res, next) {
       ...req.body,
       sellerId,
       images,
+      // Ensure boolean (body parser may deliver it as string "true")
+      sellerConfirmedCompatibility: req.body.sellerConfirmedCompatibility === true
+        || req.body.sellerConfirmedCompatibility === "true",
     });
 
     return res.status(201).json({ success: true, data: result });
@@ -30,9 +33,9 @@ export async function createMarketplacePart(req, res, next) {
 
 export async function updatePartImages(req, res, next) {
   try {
-    const { id } = req.params;
+    const { id }   = req.params;
     const sellerId = req.user.uid;
-    const files = req.files || [];
+    const files    = req.files || [];
 
     if (!files.length) {
       throw new AppError("Nenhuma imagem enviada", 400, "NO_FILES");

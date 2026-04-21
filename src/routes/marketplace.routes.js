@@ -1,6 +1,6 @@
 import express from "express";
 import multer from "multer";
-import { db } from "../config/firebase.js";
+import { db, admin } from "../config/firebase.js";
 import {
   createMarketplacePart,
   updatePartImages,
@@ -8,6 +8,10 @@ import {
 import { authenticate } from "../middlewares/authMiddleware.js";
 import { validate, createMarketplacePartSchema } from "../middlewares/validate.js";
 import { apiLimiter, publicLimiter } from "../middlewares/rateLimiter.js";
+import {
+  findOrImportMasterPartsByName,
+  findOrCreateMasterPartByOem,
+} from "../services/masterParts.service.js";
 
 const router = express.Router();
 
@@ -20,11 +24,10 @@ const upload = multer({
   },
 });
 
-// Helper: enrich items with masterPart + category + seller data
+// ─── Helper: enrich items with masterPart + category + seller data ────────────
 async function enrichItems(items) {
   if (!items.length) return [];
 
-  // ── 1. masterParts ──────────────────────────────────────────────────────────
   const masterIds = [...new Set(items.map((i) => i.masterPartId).filter(Boolean))];
   const masterDocs = await Promise.all(
     masterIds.map((id) => db.collection("masterParts").doc(id).get())
@@ -34,12 +37,9 @@ async function enrichItems(items) {
     if (doc.exists) masterMap[doc.id] = { id: doc.id, ...doc.data() };
   }
 
-  // ── 2. categories ───────────────────────────────────────────────────────────
   const catIds = [
     ...new Set(
-      Object.values(masterMap)
-        .map((m) => m.categoryId)
-        .filter(Boolean)
+      Object.values(masterMap).map((m) => m.categoryId).filter(Boolean)
     ),
   ];
   const catDocs = await Promise.all(
@@ -50,7 +50,6 @@ async function enrichItems(items) {
     if (doc.exists) catMap[doc.id] = doc.data().name;
   }
 
-  // ── 3. sellers (FIX: busca dados do vendedor para exibir nome/loja) ─────────
   const sellerIds = [...new Set(items.map((i) => i.sellerId).filter(Boolean))];
   const sellerDocs = await Promise.all(
     sellerIds.map((id) => db.collection("users").doc(id).get())
@@ -60,15 +59,15 @@ async function enrichItems(items) {
     if (doc.exists) {
       const s = doc.data();
       sellerMap[doc.id] = {
-        uid: doc.id,
-        name: s.name || s.displayName || "Loja",
-        photo: s.photo || s.photoURL || null,
-        plan: (s.plan === "premium" || s.isPremium === true) ? "premium" : "free",
-        specialty: s.specialty || "Peças Automotivas",
+        uid:            doc.id,
+        name:           s.name || s.displayName || "Loja",
+        photo:          s.photo || s.photoURL || null,
+        plan:           s.plan === "premium" || s.isPremium === true ? "premium" : "free",
+        specialty:      s.specialty || "Peças Automotivas",
         sellerVerified: s.sellerVerified || false,
-        ratingAvg: s.ratingAvg || 0,
-        ratingCount: s.ratingCount || 0,
-        coords: s.coords || null, // {lat, lng} para ordenação por proximidade
+        ratingAvg:      s.ratingAvg || 0,
+        ratingCount:    s.ratingCount || 0,
+        coords:         s.coords || null,
       };
     }
   }
@@ -79,41 +78,62 @@ async function enrichItems(items) {
     return {
       ...item,
       ...(master
-        ? {
-            part: {
-              ...master,
-              categoryName: catMap[master.categoryId] || null,
-            },
-          }
+        ? { part: { ...master, categoryName: catMap[master.categoryId] || null } }
         : {}),
       ...(seller ? { seller } : {}),
     };
   });
 }
 
-// GET / — lista peças do marketplace
-// - Público (sem sellerId): apenas aprovadas OU pendentes (se allowPending=true via admin)
-// - Com sellerId: todos os anúncios do vendedor (inclui pending para ele ver os próprios)
+// ─── GET /catalog/search — Step 1 for sellers ─────────────────────────────────
+// Sellers MUST use this endpoint to find/import a masterPart before listing.
+//
+// Query params:
+//   q=<name>           → search by name (TecDoc fallback if not in masterParts)
+//   oem=<oemNumber>    → search by OEM (imports from TecDoc if needed)
+//
+router.get("/catalog/search", authenticate, apiLimiter, async (req, res, next) => {
+  try {
+    const { q, oem } = req.query;
+
+    if (oem) {
+      // OEM search: find-or-create masterPart from TecDoc
+      const { masterPart, wasCreated } = await findOrCreateMasterPartByOem(oem);
+      return res.json({
+        success: true,
+        source: wasCreated ? "tecdoc_imported" : "masterParts",
+        data: [masterPart],
+      });
+    }
+
+    if (q) {
+      const { results, source } = await findOrImportMasterPartsByName(q);
+      return res.json({ success: true, source, data: results });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: 'Informe "q" (nome) ou "oem" (número OEM) para buscar peças do catálogo.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET / — public marketplace listing ──────────────────────────────────────
 router.get("/", publicLimiter, async (req, res, next) => {
   try {
     const { sellerId, condition, limit = 20, lastDocId } = req.query;
 
-    let query = db
-      .collection("marketplaceParts")
-      .where("active", "==", true);
+    let query = db.collection("marketplaceParts").where("active", "==", true);
 
     if (sellerId) {
-      // Vendedor vendo seus próprios anúncios — sem filtro de moderação
       query = query.where("sellerId", "==", sellerId);
     } else {
-      // Marketplace público — aprovados e pendentes
-      // (itens "pending" ficam visíveis; admin pode rejeitar pelo painel)
-      // Para moderação estrita altere para: .where("moderationStatus", "==", "approved")
       query = query.where("moderationStatus", "in", ["approved", "pending"]);
     }
 
     if (condition) query = query.where("condition", "==", condition);
-
     query = query.orderBy("createdAt", "desc").limit(Number(limit));
 
     if (lastDocId) {
@@ -130,7 +150,7 @@ router.get("/", publicLimiter, async (req, res, next) => {
       success: true,
       data,
       pagination: {
-        hasMore: snap.docs.length === Number(limit),
+        hasMore:   snap.docs.length === Number(limit),
         lastDocId: lastVisible ? lastVisible.id : null,
       },
     });
@@ -139,23 +159,17 @@ router.get("/", publicLimiter, async (req, res, next) => {
   }
 });
 
-// GET /:id
+// ─── GET /:id ─────────────────────────────────────────────────────────────────
 router.get("/:id", publicLimiter, async (req, res, next) => {
   try {
-    const doc = await db
-      .collection("marketplaceParts")
-      .doc(req.params.id)
-      .get();
+    const doc = await db.collection("marketplaceParts").doc(req.params.id).get();
     if (!doc.exists)
       return res.status(404).json({ success: false, message: "Peça não encontrada" });
 
     const data = { id: doc.id, ...doc.data() };
 
     if (data.masterPartId) {
-      const masterDoc = await db
-        .collection("masterParts")
-        .doc(data.masterPartId)
-        .get();
+      const masterDoc = await db.collection("masterParts").doc(data.masterPartId).get();
       if (masterDoc.exists) {
         const master = masterDoc.data();
         data.part = { ...master };
@@ -168,7 +182,7 @@ router.get("/:id", publicLimiter, async (req, res, next) => {
             : Promise.resolve(null),
         ]);
         if (brandDoc?.exists) data.part.brandName = brandDoc.data().name;
-        if (catDoc?.exists) data.part.categoryName = catDoc.data().name;
+        if (catDoc?.exists)   data.part.categoryName = catDoc.data().name;
       }
     }
 
@@ -177,11 +191,11 @@ router.get("/:id", publicLimiter, async (req, res, next) => {
       if (sellerDoc.exists) {
         const s = sellerDoc.data();
         data.seller = {
-          name: s.name,
+          name:           s.name,
           sellerVerified: s.sellerVerified,
-          photo: s.photo || null,
-          ratingAvg: s.ratingAvg || null,
-          ratingCount: s.ratingCount || 0,
+          photo:          s.photo || null,
+          ratingAvg:      s.ratingAvg || null,
+          ratingCount:    s.ratingCount || 0,
         };
       }
     }
@@ -192,7 +206,8 @@ router.get("/:id", publicLimiter, async (req, res, next) => {
   }
 });
 
-// POST / — criar anúncio
+// ─── POST / — create listing (catalog-controlled) ────────────────────────────
+// Sellers MUST provide masterPartId from the catalog search above.
 router.post(
   "/",
   authenticate,
@@ -202,43 +217,23 @@ router.post(
   createMarketplacePart
 );
 
-// PATCH /:id — atualizar preço, estoque ou status (apenas o próprio vendedor)
+// ─── PATCH /:id — update price / stock / active / sellerNotes ─────────────────
 router.patch("/:id", authenticate, async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const sellerId = req.user.uid;
-    const { price, stock, active } = req.body;
-
-    const ref = db.collection("marketplaceParts").doc(id);
-    const doc = await ref.get();
-
-    if (!doc.exists)
-      return res.status(404).json({ success: false, message: "Peça não encontrada" });
-
-    if (doc.data().sellerId !== sellerId && !req.user.isAdmin)
-      return res.status(403).json({ success: false, message: "Sem permissão" });
-
-    const updates = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
-    if (typeof price !== "undefined") {
-      const p = Number(price);
-      if (isNaN(p) || p <= 0) return res.status(400).json({ success: false, message: "Preço inválido" });
-      updates.price = p;
-    }
-    if (typeof stock !== "undefined") {
-      const s = Number(stock);
-      if (isNaN(s) || s < 0) return res.status(400).json({ success: false, message: "Estoque inválido" });
-      updates.stock = s;
-    }
-    if (typeof active !== "undefined") updates.active = Boolean(active);
-
-    await ref.update(updates);
-    res.json({ success: true, data: { id, ...updates } });
+    const { patchMarketplacePart } = await import("../services/marketplace.service.js");
+    const result = await patchMarketplacePart(
+      req.params.id,
+      req.user.uid,
+      req.body,
+      req.user.isAdmin || false
+    );
+    res.json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
 });
 
-// PATCH /:id/images
+// ─── PATCH /:id/images ────────────────────────────────────────────────────────
 router.patch(
   "/:id/images",
   authenticate,
