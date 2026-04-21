@@ -106,8 +106,10 @@ router.get("/", publicLimiter, async (req, res, next) => {
       // Vendedor vendo seus próprios anúncios — sem filtro de moderação
       query = query.where("sellerId", "==", sellerId);
     } else {
-      // Marketplace público — somente peças aprovadas pela moderação
-      query = query.where("moderationStatus", "==", "approved");
+      // Marketplace público — aprovados e pendentes
+      // (itens "pending" ficam visíveis; admin pode rejeitar pelo painel)
+      // Para moderação estrita altere para: .where("moderationStatus", "==", "approved")
+      query = query.where("moderationStatus", "in", ["approved", "pending"]);
     }
 
     if (condition) query = query.where("condition", "==", condition);
@@ -199,6 +201,42 @@ router.post(
   validate(createMarketplacePartSchema),
   createMarketplacePart
 );
+
+// PATCH /:id — atualizar preço, estoque ou status (apenas o próprio vendedor)
+router.patch("/:id", authenticate, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const sellerId = req.user.uid;
+    const { price, stock, active } = req.body;
+
+    const ref = db.collection("marketplaceParts").doc(id);
+    const doc = await ref.get();
+
+    if (!doc.exists)
+      return res.status(404).json({ success: false, message: "Peça não encontrada" });
+
+    if (doc.data().sellerId !== sellerId && !req.user.isAdmin)
+      return res.status(403).json({ success: false, message: "Sem permissão" });
+
+    const updates = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+    if (typeof price !== "undefined") {
+      const p = Number(price);
+      if (isNaN(p) || p <= 0) return res.status(400).json({ success: false, message: "Preço inválido" });
+      updates.price = p;
+    }
+    if (typeof stock !== "undefined") {
+      const s = Number(stock);
+      if (isNaN(s) || s < 0) return res.status(400).json({ success: false, message: "Estoque inválido" });
+      updates.stock = s;
+    }
+    if (typeof active !== "undefined") updates.active = Boolean(active);
+
+    await ref.update(updates);
+    res.json({ success: true, data: { id, ...updates } });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // PATCH /:id/images
 router.patch(

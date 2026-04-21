@@ -24,10 +24,16 @@ export async function chat(req, res, next) {
     const userData = userDoc.exists ? userDoc.data() : {};
 
     // Determina o perfil: desmanche > vendedor > comprador
+    // O campo "type" é o principal (cadastro via frontend)
+    // "isDismantler" / "isSeller" são campos legados — suportados por retrocompatibilidade
     let profile = "buyer";
-    if (userData.isDismantler === true) {
+    if (userData.type === "dismantler" || userData.isDismantler === true) {
       profile = "dismantler";
-    } else if (userData.isSeller === true || userData.role === "seller") {
+    } else if (
+      userData.type === "seller" ||
+      userData.isSeller === true ||
+      userData.role === "seller"
+    ) {
       profile = "seller";
     }
 
