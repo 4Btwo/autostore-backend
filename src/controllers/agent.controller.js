@@ -19,22 +19,36 @@ export async function chat(req, res, next) {
       .filter((m) => m && typeof m.role === "string" && typeof m.content === "string")
       .slice(-20); // limita no controller também por segurança
 
-    // Busca o perfil do usuário no Firestore para determinar o modo do agente
-    const userDoc = await db.collection("users").doc(userId).get();
-    const userData = userDoc.exists ? userDoc.data() : {};
+    const { profile: bodyProfile } = req.body;
 
-    // Determina o perfil: desmanche > vendedor > comprador
-    // O campo "type" é o principal (cadastro via frontend)
-    // "isDismantler" / "isSeller" são campos legados — suportados por retrocompatibilidade
-    let profile = "buyer";
-    if (userData.type === "dismantler" || userData.isDismantler === true) {
-      profile = "dismantler";
-    } else if (
-      userData.type === "seller" ||
-      userData.isSeller === true ||
-      userData.role === "seller"
-    ) {
-      profile = "seller";
+    // Se o body já envia profile: "admin_moderation" (chamado pelo painel admin),
+    // usa diretamente sem consultar o Firestore, desde que o token seja de admin.
+    let profile;
+    if (bodyProfile === "admin_moderation") {
+      // Valida que o usuário é admin (custom claim setada pelo backend)
+      const isAdmin = req.user?.isAdmin === true || req.user?.admin === true;
+      if (!isAdmin) {
+        throw new AppError("Acesso negado: perfil admin_moderation exige isAdmin=true", 403, "FORBIDDEN");
+      }
+      profile = "admin_moderation";
+    } else {
+      // Busca o perfil do usuário no Firestore para determinar o modo do agente
+      const userDoc = await db.collection("users").doc(userId).get();
+      const userData = userDoc.exists ? userDoc.data() : {};
+
+      // Determina o perfil: desmanche > vendedor > comprador
+      // O campo "type" é o principal (cadastro via frontend)
+      // "isDismantler" / "isSeller" são campos legados — suportados por retrocompatibilidade
+      profile = "buyer";
+      if (userData.type === "dismantler" || userData.isDismantler === true) {
+        profile = "dismantler";
+      } else if (
+        userData.type === "seller" ||
+        userData.isSeller === true ||
+        userData.role === "seller"
+      ) {
+        profile = "seller";
+      }
     }
 
     const reply = await runAgent({ message: message.trim(), profile, history: validHistory });
