@@ -164,14 +164,9 @@ Sua função é analisar dados de anúncios e retornar APENAS um JSON válido co
   "description_quality": "<boa|media|ruim>"
 }
 
-Critérios de pontuação:
-- Score 80-100 → verdict: "approve"
-- Score 50-79  → verdict: "review"
-- Score 0-49   → verdict: "reject"
-
-Flags disponíveis: "sem_descricao", "sem_fotos", "preco_suspeito", "oem_invalido", "estoque_zero", "vendedor_nao_verificado", "categoria_incorreta", "spam_detectado"
-
-IMPORTANTE: Retorne SOMENTE o JSON, sem markdown, sem explicações, sem blocos de código.`,
+Critérios: score 80-100 → approve | 50-79 → review | 0-49 → reject
+Flags: "sem_descricao", "sem_fotos", "preco_suspeito", "oem_invalido", "estoque_zero", "vendedor_nao_verificado", "categoria_incorreta", "spam_detectado"
+IMPORTANTE: Retorne SOMENTE o JSON, sem markdown, sem explicações.`,
   };
 
   return profiles[profile] || profiles.buyer;

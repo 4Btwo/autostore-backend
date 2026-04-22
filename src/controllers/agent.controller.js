@@ -20,15 +20,12 @@ export async function chat(req, res, next) {
       .slice(-20); // limita no controller também por segurança
 
     const { profile: bodyProfile } = req.body;
-
-    // Se o body já envia profile: "admin_moderation" (chamado pelo painel admin),
-    // usa diretamente sem consultar o Firestore, desde que o token seja de admin.
     let profile;
+
     if (bodyProfile === "admin_moderation") {
-      // Valida que o usuário é admin (custom claim setada pelo backend)
-      const isAdmin = req.user?.isAdmin === true || req.user?.admin === true;
-      if (!isAdmin) {
-        throw new AppError("Acesso negado: perfil admin_moderation exige isAdmin=true", 403, "FORBIDDEN");
+      // Apenas admins podem usar este perfil (custom claim isAdmin=true no JWT)
+      if (!req.user?.isAdmin) {
+        throw new AppError("Acesso negado: requer perfil admin", 403, "FORBIDDEN");
       }
       profile = "admin_moderation";
     } else {
@@ -36,9 +33,6 @@ export async function chat(req, res, next) {
       const userDoc = await db.collection("users").doc(userId).get();
       const userData = userDoc.exists ? userDoc.data() : {};
 
-      // Determina o perfil: desmanche > vendedor > comprador
-      // O campo "type" é o principal (cadastro via frontend)
-      // "isDismantler" / "isSeller" são campos legados — suportados por retrocompatibilidade
       profile = "buyer";
       if (userData.type === "dismantler" || userData.isDismantler === true) {
         profile = "dismantler";
