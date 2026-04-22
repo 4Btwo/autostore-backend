@@ -6,7 +6,28 @@ import logger from "../utils/logger.js";
 
 const router = express.Router();
 
-// Todas as rotas admin exigem Custom Claim isAdmin=true
+// ─── POST /admin/bootstrap-claim ─────────────────────────────────────────────
+// Rota PÚBLICA usada apenas para promover o primeiro admin.
+// Protegida por BOOTSTRAP_SECRET nas env vars do Render.
+router.post("/bootstrap-claim", async (req, res, next) => {
+  try {
+    const { uid, secret } = req.body;
+    if (!secret || secret !== process.env.BOOTSTRAP_SECRET) {
+      return res.status(403).json({ success: false, message: "Secret inválido." });
+    }
+    if (!uid) {
+      return res.status(400).json({ success: false, message: "uid obrigatório." });
+    }
+    await admin.auth().setCustomUserClaims(uid, { isAdmin: true });
+    await db.collection("users").doc(uid).set({ isAdmin: true }, { merge: true });
+    logger.info("Bootstrap admin realizado", { uid });
+    res.json({ success: true, message: `Usuário ${uid} promovido a admin. Faça logout e login novamente.` });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Todas as rotas abaixo exigem Custom Claim isAdmin=true
 router.use(requireAdmin);
 
 // ─── GET /admin/marketplace-parts ─────────────────────────────────────────────
