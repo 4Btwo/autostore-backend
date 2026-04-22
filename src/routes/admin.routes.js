@@ -238,4 +238,79 @@ router.get("/users", async (req, res, next) => {
   }
 });
 
+
+// ─── GET /admin/sellers/pending ───────────────────────────────────────────────
+router.get("/sellers/pending", async (req, res, next) => {
+  try {
+    const snap = await db.collection("users")
+      .where("type", "==", "seller")
+      .where("sellerVerified", "==", false)
+      .orderBy("createdAt", "desc")
+      .limit(50)
+      .get();
+
+    const sellers = snap.docs.map(doc => {
+      const { password, ...safe } = doc.data();
+      return { id: doc.id, ...safe };
+    });
+
+    res.json({ success: true, data: sellers });
+  } catch (e) { next(e); }
+});
+
+// ─── PATCH /admin/sellers/:id/approve ────────────────────────────────────────
+router.patch("/sellers/:id/approve", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const adminUid = req.user.uid;
+
+    await db.collection("users").doc(id).update({
+      sellerVerified: true,
+      verifiedAt: new Date().toISOString(),
+      verifiedBy: adminUid,
+    });
+
+    await db.collection("notifications").add({
+      userId: id,
+      type: "seller_approved",
+      title: "Conta verificada! ✅",
+      message: "Sua conta de vendedor foi verificada. Agora você pode publicar anúncios no marketplace.",
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    logger.info("Vendedor aprovado", { sellerId: id, adminUid });
+    res.json({ success: true, message: "Vendedor aprovado com sucesso" });
+  } catch (e) { next(e); }
+});
+
+// ─── PATCH /admin/sellers/:id/reject ─────────────────────────────────────────
+router.patch("/sellers/:id/reject", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason = "Documentação insuficiente" } = req.body;
+    const adminUid = req.user.uid;
+
+    await db.collection("users").doc(id).update({
+      sellerVerified: false,
+      sellerRejected: true,
+      rejectionReason: reason,
+      rejectedAt: new Date().toISOString(),
+      rejectedBy: adminUid,
+    });
+
+    await db.collection("notifications").add({
+      userId: id,
+      type: "seller_rejected",
+      title: "Verificação não aprovada",
+      message: `Sua solicitação de vendedor foi recusada. Motivo: ${reason}`,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    logger.info("Vendedor rejeitado", { sellerId: id, adminUid, reason });
+    res.json({ success: true, message: "Vendedor rejeitado" });
+  } catch (e) { next(e); }
+});
+
 export default router;
